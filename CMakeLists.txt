@@ -3,6 +3,10 @@ cmake_minimum_required(VERSION 3.5)
 # Set extension name here
 set(TARGET_NAME mongo)
 
+# MongoDB C++ driver requires C++17 for std::optional and std::string_view.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # DuckDB's extension distribution supports vcpkg. As such, dependencies can be added in ./vcpkg.json and then
 # used in cmake with find_package. Feel free to remove or replace with other dependencies.
 # Note that it should also be removed from vcpkg.json to prevent needlessly installing it..
