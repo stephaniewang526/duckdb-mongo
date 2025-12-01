@@ -86,7 +86,7 @@ LOAD '/path/to/mongo.duckdb_extension';
 
 You can attach a MongoDB database using the `ATTACH` command. The extension supports two connection string formats:
 
-#### Key-Value Format (Recommended)
+#### Key-value format (recommended)
 
 Similar to Postgres libpq format, use space-separated key=value pairs:
 
@@ -111,15 +111,43 @@ ATTACH 'host=localhost port=27017 user=myuser password=mypass authsource=admin' 
 - `user` - Username for authentication (optional)
 - `password` - Password for authentication (optional)
 - `authsource` - Authentication database (optional, default: `admin`)
+- `srv` - Use SRV DNS resolution for MongoDB Atlas (optional, set to `true` for Atlas connections)
+- `options` - Additional connection options (optional, e.g., `tls=true&tlsAllowInvalidCertificates=true`)
 
-#### MongoDB URI Format
+#### MongoDB Atlas
 
-You can also use the standard MongoDB URI format, but you must use `TYPE MONGO` explicitly:
+To connect to MongoDB Atlas hosted clusters, use the `srv=true` parameter:
+
+```sql
+-- MongoDB Atlas connection
+ATTACH 'host=cluster0.xxxxx.mongodb.net user=myuser password=mypass srv=true' AS atlas_db (TYPE MONGO);
+
+-- With specific database
+ATTACH 'host=cluster0.xxxxx.mongodb.net user=myuser password=mypass dbname=mydb srv=true' AS atlas_db (TYPE MONGO);
+
+-- With additional options
+ATTACH 'host=cluster0.xxxxx.mongodb.net user=myuser password=mypass srv=true options=authSource=admin' AS atlas_db (TYPE MONGO);
+```
+
+When `srv=true` is set, the extension automatically:
+- Uses `mongodb+srv://` connection scheme with DNS SRV resolution
+- Omits the port (DNS handles service discovery)
+- Adds `retryWrites=true&w=majority` for Atlas best practices
+
+**Finding your Atlas connection details:**
+1. Go to your MongoDB Atlas cluster
+2. Click "Connect" and then "Drivers"
+3. Copy the hostname (e.g., `cluster0.xxxxx.mongodb.net`)
+4. Use your database user credentials (not your Atlas account)
+
+#### MongoDB URI format
+
+You can also use the standard MongoDB URI format directly:
 
 ```sql
 ATTACH 'mongodb://localhost:27017' AS mongo_db (TYPE MONGO);
 ATTACH 'mongodb://user:pass@localhost:27017/mydb' AS mongo_db (TYPE MONGO);
-ATTACH 'mongodb+srv://cluster.mongodb.net' AS mongo_db (TYPE MONGO);
+ATTACH 'mongodb+srv://user:pass@cluster0.xxxxx.mongodb.net/mydb?retryWrites=true&w=majority' AS atlas_db (TYPE MONGO);
 ```
 
 **Note:** The key=value format is recommended because it avoids issues with DuckDB trying to open `mongodb://` URLs as files.

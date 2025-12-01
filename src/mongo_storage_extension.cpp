@@ -32,7 +32,7 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 			}
 		}
 
-		// Build MongoDB connection string
+		// Build MongoDB connection string.
 		string host = params.count("host") ? params["host"] : "localhost";
 		string port = params.count("port") ? params["port"] : "27017";
 		database_name = params.count("dbname") ? params["dbname"] : "";
@@ -40,8 +40,15 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 		string password = params.count("password") ? params["password"] : "";
 		string auth_source = params.count("authsource") ? params["authsource"] : "";
 
-		// Build connection string
-		connection_string = "mongodb://";
+		// Check if using SRV connection (for MongoDB Atlas).
+		bool use_srv = false;
+		if (params.count("srv")) {
+			string srv_value = StringUtil::Lower(params["srv"]);
+			use_srv = (srv_value == "true" || srv_value == "1" || srv_value == "yes");
+		}
+
+		// Build connection string.
+		connection_string = use_srv ? "mongodb+srv://" : "mongodb://";
 		if (!username.empty() || !password.empty()) {
 			connection_string += username;
 			if (!password.empty()) {
@@ -49,12 +56,38 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 			}
 			connection_string += "@";
 		}
-		connection_string += host + ":" + port;
+		// For SRV connections, don't include the port (DNS handles it).
+		if (use_srv) {
+			connection_string += host;
+		} else {
+			connection_string += host + ":" + port;
+		}
 		if (!database_name.empty()) {
 			connection_string += "/" + database_name;
 		}
+
+		// Build query parameters.
+		vector<string> query_params;
 		if (!auth_source.empty()) {
-			connection_string += "?authSource=" + auth_source;
+			query_params.push_back("authSource=" + auth_source);
+		}
+		// Add common Atlas options when using SRV.
+		if (use_srv) {
+			query_params.push_back("retryWrites=true");
+			query_params.push_back("w=majority");
+		}
+		// Add any additional options from the options parameter.
+		if (params.count("options")) {
+			query_params.push_back(params["options"]);
+		}
+		if (!query_params.empty()) {
+			connection_string += "?";
+			for (size_t i = 0; i < query_params.size(); i++) {
+				if (i > 0) {
+					connection_string += "&";
+				}
+				connection_string += query_params[i];
+			}
 		}
 	} else {
 		// Extract database name from MongoDB URI if present
