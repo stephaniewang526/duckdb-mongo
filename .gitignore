@@ -1,7 +1,9 @@
-build
-.idea
-cmake-build-debug
+build/
+.idea/
+.vscode/
+cmake-build-debug/
 duckdb_unittest_tempdir/
+vcpkg_installed/
 .DS_Store
 testext
 test/python/__pycache__/
@@ -9,3 +11,5 @@ test/python/__pycache__/
 *.code-workspace
 host=*
 *.db
+*.duckdb
+*.duckdb.wal
