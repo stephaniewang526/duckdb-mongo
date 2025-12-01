@@ -15,12 +15,14 @@ set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 project(${TARGET_NAME})
 include_directories(src/include)
 
-set(EXTENSION_SOURCES 
-    src/mongo_extension.cpp 
-    src/mongo_table_function.cpp 
-    src/mongo_storage_extension.cpp 
+set(EXTENSION_SOURCES
+    src/mongo_extension.cpp
+    src/mongo_table_function.cpp
+    src/mongo_storage_extension.cpp
     src/mongo_catalog.cpp
     src/mongo_instance.cpp
+    src/mongo_transaction.cpp
+    src/mongo_transaction_manager.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

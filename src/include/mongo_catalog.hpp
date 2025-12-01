@@ -1,11 +1,10 @@
 #pragma once
 
-#include "duckdb.hpp"
 #include "duckdb/catalog/duck_catalog.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
+#include "duckdb/storage/database_size.hpp"
 #include "mongo_instance.hpp"
 #include <mongocxx/client.hpp>
-#include <string>
 
 namespace duckdb {
 
@@ -22,7 +21,44 @@ public:
 	// Override LookupSchema to ensure schemas are found correctly
 	optional_ptr<SchemaCatalogEntry> LookupSchema(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup,
 	                                              OnEntryNotFound if_not_found) override;
-	
+
+	// Override to prevent DuckDB from creating local storage files for this catalog.
+	bool IsDuckCatalog() override {
+		return false;
+	}
+
+	// Override to prevent accessing non-existent storage manager.
+	bool InMemory() override {
+		return false;
+	}
+
+	// Override to prevent accessing non-existent storage manager.
+	string GetDBPath() override {
+		return connection_string;
+	}
+
+	// Override to prevent accessing non-existent storage manager.
+	DatabaseSize GetDatabaseSize(ClientContext &context) override {
+		DatabaseSize size;
+		size.free_blocks = 0;
+		size.total_blocks = 0;
+		size.used_blocks = 0;
+		size.wal_size = 0;
+		size.block_size = 0;
+		size.bytes = 0;
+		return size;
+	}
+
+	// Override to prevent accessing non-existent storage manager.
+	bool IsEncrypted() const override {
+		return false;
+	}
+
+	// Override to prevent accessing non-existent storage manager.
+	string GetEncryptionCipher() const override {
+		return string();
+	}
+
 	// Get default schema name (when dbname is specified, return the database name as the default schema)
 	string GetDefaultSchema() const override {
 		// When a specific database is specified, return that database name as the schema name

@@ -1,7 +1,7 @@
 #include "mongo_storage_extension.hpp"
 #include "duckdb/storage/storage_extension.hpp"
-#include "duckdb/transaction/duck_transaction_manager.hpp"
 #include "mongo_catalog.hpp"
+#include "mongo_transaction_manager.hpp"
 
 namespace duckdb {
 
@@ -80,9 +80,8 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 
 unique_ptr<TransactionManager> MongoStorageTransactionManager(optional_ptr<StorageExtensionInfo> storage_info,
                                                               AttachedDatabase &db, Catalog &catalog) {
-	// For read-only MongoDB operations, we can use DuckTransactionManager
-	// MongoDB doesn't support transactions in the same way as DuckDB
-	return make_uniq<DuckTransactionManager>(db);
+	auto &mongo_catalog = catalog.Cast<MongoCatalog>();
+	return make_uniq<MongoTransactionManager>(db, mongo_catalog);
 }
 
 unique_ptr<StorageExtension> MongoStorageExtension::Create() {
