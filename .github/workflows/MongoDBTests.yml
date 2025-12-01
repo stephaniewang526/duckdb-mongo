@@ -33,7 +33,6 @@ jobs:
     env:
       VCPKG_TARGET_TRIPLET: ${{ matrix.vcpkg_triplet }}
       GEN: Ninja
-      VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
 
     steps:
     - name: Install required ubuntu packages
@@ -78,6 +77,7 @@ jobs:
       env:
         GEN: ninja
         STATIC_LIBCPP: 1
+        VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       run: |
         make release
 
