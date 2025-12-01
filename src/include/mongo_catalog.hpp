@@ -11,13 +11,13 @@ namespace duckdb {
 class MongoCatalog : public DuckCatalog {
 public:
 	explicit MongoCatalog(AttachedDatabase &db, const string &connection_string, const string &database_name = "");
-	
+
 	string connection_string;
 	string database_name; // Specific database to use (empty means all databases)
-	
+
 	// Override to list MongoDB databases as schemas
 	void ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) override;
-	
+
 	// Override LookupSchema to ensure schemas are found correctly
 	optional_ptr<SchemaCatalogEntry> LookupSchema(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup,
 	                                              OnEntryNotFound if_not_found) override;
@@ -66,7 +66,7 @@ public:
 		// and users is the collection, which will be found in the schema named after the MongoDB database
 		return database_name.empty() ? "" : database_name;
 	}
-	
+
 	// Get MongoDB client
 	mongocxx::client GetClient() const {
 		GetMongoInstance(); // Ensure instance is initialized
@@ -75,4 +75,3 @@ public:
 };
 
 } // namespace duckdb
-

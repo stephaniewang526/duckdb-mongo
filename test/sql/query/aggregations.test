@@ -1,6 +1,6 @@
 # name: test/sql/query/aggregations.test
 # description: Test aggregation queries with mongo_scan
-# group: [sql]
+# group: [query]
 
 require mongo
 

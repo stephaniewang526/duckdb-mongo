@@ -37,4 +37,3 @@ void MongoTransactionManager::Checkpoint(ClientContext &context, bool force) {
 }
 
 } // namespace duckdb
-

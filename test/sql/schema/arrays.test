@@ -1,6 +1,6 @@
 # name: test/sql/schema/arrays.test
 # description: Test schema inference for arrays
-# group: [sql]
+# group: [schema]
 
 require mongo
 

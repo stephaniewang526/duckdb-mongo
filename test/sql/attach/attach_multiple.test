@@ -1,6 +1,6 @@
 # name: test/sql/attach/attach_multiple.test
 # description: Test attaching multiple MongoDB instances
-# group: [sql]
+# group: [attach]
 
 require mongo
 

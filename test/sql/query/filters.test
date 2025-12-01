@@ -1,6 +1,6 @@
 # name: test/sql/query/filters.test
 # description: Test filtering capabilities with mongo_scan
-# group: [sql]
+# group: [query]
 
 require mongo
 

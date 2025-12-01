@@ -1,6 +1,6 @@
 # name: test/sql/attach/attach_basic.test
 # description: Basic ATTACH functionality tests
-# group: [sql]
+# group: [attach]
 
 # Require statement will ensure this test is run with this extension loaded
 require mongo

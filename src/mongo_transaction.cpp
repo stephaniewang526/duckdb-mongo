@@ -32,4 +32,3 @@ MongoTransaction &MongoTransaction::Get(ClientContext &context, Catalog &catalog
 }
 
 } // namespace duckdb
-

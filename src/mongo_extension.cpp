@@ -12,22 +12,21 @@ namespace duckdb {
 unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBindInput &input,
                                        vector<LogicalType> &return_types, vector<string> &names);
 unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
-                                                        GlobalTableFunctionState *global_state);
+                                                       GlobalTableFunctionState *global_state);
 void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register MongoDB table function
-	TableFunction mongo_scan("mongo_scan",
-	                         {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	TableFunction mongo_scan("mongo_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
 	                         MongoScanFunction, MongoScanBind, nullptr, MongoScanInitLocal);
-	
+
 	// Add optional parameters
 	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
 	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
-	
+
 	// Register the table function
 	loader.RegisterFunction(mongo_scan);
-	
+
 	// Register MongoDB storage extension for ATTACH support
 	auto &db = loader.GetDatabaseInstance();
 	auto &config = DBConfig::GetConfig(db);

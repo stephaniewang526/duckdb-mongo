@@ -57,8 +57,7 @@ public:
 					return result;
 				};
 				result->sql = StringUtil::Format("SELECT * FROM mongo_scan('%s', '%s', '%s')",
-				                                 escape_sql_string(connection_string),
-				                                 escape_sql_string(database_name),
+				                                 escape_sql_string(connection_string), escape_sql_string(database_name),
 				                                 escape_sql_string(collection_name));
 				auto view_info = CreateViewInfo::FromSelect(context, std::move(result));
 				return make_uniq_base<CatalogEntry, ViewCatalogEntry>(catalog, schema, *view_info);
@@ -89,7 +88,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	try {
 		auto client = GetClient();
 		vector<string> databases;
-		
+
 		// If a specific database is specified, use the default schema (empty string = main/default)
 		// Otherwise, list all databases as separate schemas
 		if (!database_name.empty()) {
@@ -111,15 +110,16 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 				databases.push_back(db_name);
 			}
 		}
-		
+
 		auto system_transaction = CatalogTransaction::GetSystemTransaction(db.GetDatabase());
-		
+
 		for (const auto &schema_name : databases) {
 			// Skip system databases (unless specifically requested via dbname)
-			if (database_name.empty() && (schema_name == "admin" || schema_name == "local" || schema_name == "config")) {
+			if (database_name.empty() &&
+			    (schema_name == "admin" || schema_name == "local" || schema_name == "config")) {
 				continue;
 			}
-			
+
 			// Create or get schema
 			// If schema_name is empty and dbname is specified, use the database name as schema name
 			// This ensures the schema is created in our catalog and is unique
@@ -134,7 +134,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 			} else {
 				actual_schema_name = schema_name;
 			}
-			
+
 			CreateSchemaInfo schema_info;
 			schema_info.schema = actual_schema_name;
 			schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
@@ -146,13 +146,13 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 				string generator_db_name = database_name.empty() ? schema_name : database_name;
 				auto &duck_schema = schema.Cast<DuckSchemaEntry>();
 				auto &catalog_set = duck_schema.GetCatalogSet(CatalogType::VIEW_ENTRY);
-				
+
 				// Always set the default generator, even if schema already existed
 				// This ensures collections are accessible
 				auto default_generator =
 				    make_uniq<MongoCollectionGenerator>(*this, schema, connection_string, generator_db_name);
 				catalog_set.SetDefaultGenerator(std::move(default_generator));
-				
+
 				callback(schema);
 			}
 		}
@@ -163,18 +163,20 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	}
 }
 
-optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction transaction, const EntryLookupInfo &schema_lookup,
+optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction transaction,
+                                                            const EntryLookupInfo &schema_lookup,
                                                             OnEntryNotFound if_not_found) {
 	auto schema_name = schema_lookup.GetEntryName();
-	
+
 	// If looking for default schema and dbname is specified, use the database name
 	if (schema_name.empty() && !database_name.empty()) {
 		schema_name = database_name;
 	}
-	
+
 	// Try to find the schema first
-	auto schema = DuckCatalog::LookupSchema(transaction, EntryLookupInfo(CatalogType::SCHEMA_ENTRY, schema_name), OnEntryNotFound::RETURN_NULL);
-	
+	auto schema = DuckCatalog::LookupSchema(transaction, EntryLookupInfo(CatalogType::SCHEMA_ENTRY, schema_name),
+	                                        OnEntryNotFound::RETURN_NULL);
+
 	// If schema not found and dbname is specified, create it on-demand
 	if (!schema && !database_name.empty() && schema_name == database_name) {
 		try {
@@ -198,13 +200,12 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 			// If we can't create the schema, fall through to return null or throw
 		}
 	}
-	
+
 	if (!schema && if_not_found != OnEntryNotFound::RETURN_NULL) {
 		throw BinderException("Schema with name \"%s\" not found", schema_name);
 	}
-	
+
 	return schema;
 }
 
 } // namespace duckdb
-

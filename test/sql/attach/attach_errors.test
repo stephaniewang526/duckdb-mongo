@@ -1,6 +1,6 @@
 # name: test/sql/attach/attach_errors.test
 # description: Error handling tests for ATTACH
-# group: [sql]
+# group: [attach]
 
 require mongo
 

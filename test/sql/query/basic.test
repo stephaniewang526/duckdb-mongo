@@ -1,6 +1,6 @@
 # name: test/sql/query/basic.test
 # description: Basic query tests for mongo_scan function
-# group: [sql]
+# group: [query]
 
 require mongo
 

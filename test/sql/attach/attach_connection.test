@@ -1,6 +1,6 @@
 # name: test/sql/attach/attach_connection.test
 # description: Test various connection string formats
-# group: [sql]
+# group: [attach]
 
 require mongo
 

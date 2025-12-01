@@ -1,6 +1,6 @@
 # name: test/sql/edge_cases/empty_collections.test
 # description: Test edge cases with empty collections
-# group: [sql]
+# group: [edge_cases]
 
 require mongo
 
