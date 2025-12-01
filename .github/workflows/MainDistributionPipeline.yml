@@ -27,4 +27,5 @@ jobs:
       duckdb_version: v1.4.1
       ci_tools_version: v1.4.1
       extension_name: mongo
-      format_checks: 'format;tidy'
+      # Tidy check disabled because it requires MongoDB C++ driver (vcpkg dependency).
+      format_checks: 'format'
