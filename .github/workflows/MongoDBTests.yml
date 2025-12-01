@@ -76,10 +76,11 @@ jobs:
     - name: Build extension
       env:
         GEN: ninja
-        STATIC_LIBCPP: 1
         VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
       run: |
-        make release
+        echo "VCPKG_TOOLCHAIN_PATH=$VCPKG_TOOLCHAIN_PATH"
+        echo "VCPKG_TARGET_TRIPLET=$VCPKG_TARGET_TRIPLET"
+        make release 2>&1 | tee build.log || (tail -100 build.log && exit 1)
 
     - name: Create MongoDB test data
       run: |
