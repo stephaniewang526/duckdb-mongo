@@ -38,7 +38,7 @@ export VCPKG_TOOLCHAIN_PATH=`pwd`/scripts/buildsystems/vcpkg.cmake
 
 1. Clone the repository with submodules:
 ```sh
-git clone --recurse-submodules https://github.com/duckdb/duckdb-mongo.git
+git clone --recurse-submodules https://github.com/stephaniewang526/duckdb-mongo.git
 cd duckdb-mongo
 ```
 
