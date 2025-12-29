@@ -6,6 +6,133 @@ Integrates DuckDB with MongoDB, enabling direct SQL queries over MongoDB collect
 
 The `duckdb-mongo` extension allows you to query MongoDB collections directly from DuckDB using SQL. It provides a table function `mongo_scan` that connects to MongoDB, infers the schema from your documents, and returns the data as a DuckDB table.
 
+## Architecture
+
+The extension provides **direct SQL access to MongoDB without exporting or copying data**. All queries execute against live MongoDB data in real-time.
+
+```
+┌──────────────────┐
+│ User/Application │
+│   (SQL Queries)  │
+└────────┬─────────┘
+         │ SQL Query
+         ▼
+┌─────────────────────────────────────────┐
+│         DUCKDB ENGINE                   │
+│  ┌───────────────────────────────────┐  │
+│  │ SQL Planning & Optimization       │  │
+│  │ - Query planning                  │  │
+│  │ - Filter pushdown analysis        │  │
+│  └───────────────────────────────────┘  │
+│  ┌───────────────────────────────────┐  │
+│  │ SQL Execution (Analytical)        │  │
+│  │ - Joins                           │  │
+│  │ - Aggregations (GROUP BY, COUNT)  │  │
+│  │ - Sorting                         │  │
+│  │ - Window functions                │  │
+│  │ - Complex SQL operations          │  │
+│  └───────────────────────────────────┘  │
+└────────┬────────────────────────────────┘
+         │ Table Function Call (mongo_scan)
+         │ Requests data chunks
+         ▼
+┌─────────────────────────────────────────┐
+│ duckdb-mongo Extension                  │
+│                                         │
+│  • Schema Inference                     │
+│  • Filter Translation                   │
+│  • BSON → Columnar                      │
+│  • Type Conversion                      │
+└────────┬────────────────────────────────┘
+         │
+         │ MongoDB Query (filtered)
+         │ Stream documents on-demand
+         ▼
+┌─────────────────────────────────────────┐
+│         MONGODB DATABASE                │
+│  ┌───────────────────────────────────┐  │
+│  │ Document Store Operations         │  │
+│  │ - Index lookups                   │  │
+│  │ - Document filtering              │  │
+│  │ - Cursor management               │  │
+│  │ - Document retrieval              │  │
+│  └───────────────────────────────────┘  │
+│                                         │
+│  Data stays here (No ETL/Export)        │
+└─────────────────────────────────────────┘
+```
+
+### Execution Responsibilities
+
+**MongoDB Handles:**
+- **Document filtering**: Uses MongoDB indexes and query engine to filter documents efficiently
+- **Index lookups**: Leverages MongoDB's B-tree indexes for fast document retrieval
+- **Cursor management**: Manages result sets and pagination
+- **Document storage**: Data remains in MongoDB's native BSON format
+
+MongoDB is optimized for document storage and retrieval. By pushing filters down to MongoDB, we leverage its indexing capabilities and reduce the amount of data transferred over the network.
+
+**DuckDB Handles:**
+- **SQL planning**: Analyzes the SQL query and creates an execution plan
+- **Analytical operations**: Performs joins, aggregations, sorting, window functions, and complex SQL transformations
+- **Columnar processing**: Executes operations on columnar in-memory data structures
+- **Query optimization**: Applies DuckDB's query optimizer for analytical workloads
+
+DuckDB is optimized for analytical SQL queries on columnar data. It excels at aggregations, joins, and complex analytical operations that MongoDB's document model isn't designed for.
+
+### Storage vs Compute Separation
+
+This extension implements a **separation of storage from compute** architecture:
+
+**Storage Layer (MongoDB):**
+- **Format**: BSON (Binary JSON) - document-oriented storage
+- **Location**: Persistent storage in MongoDB
+- **Optimization**: Optimized for document writes, reads, and indexing
+- **Data Model**: Flexible schema with nested documents and arrays
+
+**Compute Layer (DuckDB):**
+- **Format**: Columnar in-memory format
+- **Location**: DuckDB's memory buffers (temporary, query-scoped)
+- **Optimization**: Optimized for analytical queries (scans, aggregations, joins)
+- **Data Model**: Structured columns with inferred types
+
+**Why This Separation?**
+
+1. **Leverage Best of Both Worlds**: MongoDB excels at document storage and operational queries, while DuckDB excels at analytical SQL workloads. Each system operates in its optimal format.
+
+2. **No Data Duplication**: Data remains in MongoDB. The columnar format is created on-the-fly in memory only for query execution, then discarded. No persistent copies or ETL pipelines needed.
+
+3. **Format Conversion**: The extension bridges the gap by converting BSON documents → columnar format only when needed for analytical processing. This conversion happens incrementally as data streams from MongoDB.
+
+4. **Efficient Resource Usage**: MongoDB handles storage, indexing, and document filtering. DuckDB handles analytical computation on columnar data. Each system does what it's best at.
+
+5. **Real-Time Analytics**: Since conversion happens on-demand during query execution, you always query the latest data without maintaining separate analytical databases or data warehouses.
+
+### Data Flow
+
+1. **SQL Planning**: DuckDB receives SQL queries and plans execution. When it encounters `mongo_scan()` or attached MongoDB tables, it calls the extension.
+
+2. **Schema Inference**: The extension samples documents from MongoDB to infer column names and types, creating a DuckDB table schema.
+
+3. **Filter Pushdown**: Filters from SQL WHERE clauses are translated to MongoDB query filters and pushed down to MongoDB. **MongoDB executes these filters** using its indexes and query engine, reducing data transfer.
+
+4. **Document Streaming**: MongoDB returns matching documents via a cursor. Documents are fetched on-demand (streamed) as DuckDB requests more data. No bulk export occurs - data flows incrementally.
+
+5. **BSON to Columnar Conversion**: The extension parses BSON documents and converts them to DuckDB's columnar in-memory format:
+   - BSON fields → DuckDB columns
+   - Nested documents → flattened columns (e.g., `user.name` → `user_name`)
+   - Type conversion (BSON types → DuckDB SQL types)
+   - Data written to DuckDB's memory buffers
+
+6. **SQL Execution**: **DuckDB executes** joins, aggregations, sorting, and other SQL operations on the in-memory columnar data, leveraging its analytical query engine.
+
+**Key Points:**
+- **No ETL Required**: Data never leaves MongoDB. Queries execute directly against your MongoDB collections.
+- **On-the-Fly Schema Inference**: The extension samples documents to infer schema structure and types without pre-processing.
+- **Direct Connection**: Uses MongoDB C++ driver to establish native connections to MongoDB instances.
+- **Query Translation**: SQL queries are translated to MongoDB queries, with filtering pushed down to MongoDB when possible.
+- **Real-Time Results**: All data is fetched and converted on-demand during query execution.
+
 ## Features
 
 - **Direct MongoDB Queries**: Query MongoDB collections directly from DuckDB without exporting data
