@@ -96,7 +96,7 @@ This extension implements a **separation of storage from compute** architecture:
 - **Optimization**: Optimized for analytical queries (scans, aggregations, joins)
 - **Data Model**: Structured columns with inferred types
 
-**Why This Separation?**
+This seperation allows us to achieve the following:
 
 1. **Leverage Best of Both Worlds**: MongoDB excels at document storage and operational queries, while DuckDB excels at analytical SQL workloads. Each system operates in its optimal format.
 
@@ -125,13 +125,6 @@ This extension implements a **separation of storage from compute** architecture:
    - Data written to DuckDB's memory buffers
 
 6. **SQL Execution**: **DuckDB executes** joins, aggregations, sorting, and other SQL operations on the in-memory columnar data, leveraging its analytical query engine.
-
-**Key Points:**
-- **No ETL Required**: Data never leaves MongoDB. Queries execute directly against your MongoDB collections.
-- **On-the-Fly Schema Inference**: The extension samples documents to infer schema structure and types without pre-processing.
-- **Direct Connection**: Uses MongoDB C++ driver to establish native connections to MongoDB instances.
-- **Query Translation**: SQL queries are translated to MongoDB queries, with filtering pushed down to MongoDB when possible.
-- **Real-Time Results**: All data is fetched and converted on-demand during query execution.
 
 ## Features
 
