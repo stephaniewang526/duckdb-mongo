@@ -18,8 +18,7 @@ public:
 	MongoSchemaEntry(Catalog &catalog, CreateSchemaInfo &info);
 
 	// Override LookupEntry to support default generators
-	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction,
-	                                       const EntryLookupInfo &lookup_info) override;
+	optional_ptr<CatalogEntry> LookupEntry(CatalogTransaction transaction, const EntryLookupInfo &lookup_info) override;
 
 	// Set default generator for views (collections)
 	void SetDefaultGenerator(unique_ptr<DefaultGenerator> generator);
@@ -28,7 +27,7 @@ public:
 	optional_ptr<CatalogEntry> CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) override;
 	optional_ptr<CatalogEntry> CreateFunction(CatalogTransaction transaction, CreateFunctionInfo &info) override;
 	optional_ptr<CatalogEntry> CreateIndex(CatalogTransaction transaction, CreateIndexInfo &info,
-	                                      TableCatalogEntry &table) override;
+	                                       TableCatalogEntry &table) override;
 	optional_ptr<CatalogEntry> CreateView(CatalogTransaction transaction, CreateViewInfo &info) override;
 	optional_ptr<CatalogEntry> CreateSequence(CatalogTransaction transaction, CreateSequenceInfo &info) override;
 	optional_ptr<CatalogEntry> CreateTableFunction(CatalogTransaction transaction,
@@ -48,14 +47,13 @@ private:
 	void TryLoadEntries(ClientContext &context);
 	// Helper to create view entry lazily
 	shared_ptr<CatalogEntry> GetOrCreateViewEntry(ClientContext &context, const string &collection_name);
-	
+
 	mutex entry_lock;
 	mutex load_lock; // Separate lock for loading to prevent deadlocks
 	case_insensitive_map_t<shared_ptr<CatalogEntry>> views;
 	unique_ptr<DefaultGenerator> default_generator;
-	atomic<bool> is_loaded = false; // Track if collections have been loaded
+	atomic<bool> is_loaded = false;         // Track if collections have been loaded
 	vector<string> loaded_collection_names; // Collection names loaded from MongoDB (for lazy view creation)
 };
 
 } // namespace duckdb
-

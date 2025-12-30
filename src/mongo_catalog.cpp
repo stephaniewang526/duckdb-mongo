@@ -62,7 +62,7 @@ public:
 		auto result = make_uniq<CreateViewInfo>();
 		result->schema = schema.name;
 		result->view_name = collection_name;
-		
+
 		auto escape_sql_string = [](const string &str) -> string {
 			string result;
 			for (char c : str) {
@@ -74,43 +74,44 @@ public:
 			}
 			return result;
 		};
-		
+
 		if (cached_escaped_connection_string.empty()) {
 			cached_escaped_connection_string = escape_sql_string(connection_string);
 			cached_escaped_database_name = escape_sql_string(database_name);
 		}
 		string escaped_collection_name = escape_sql_string(collection_name);
-		
-		result->sql = StringUtil::Format("SELECT * FROM mongo_scan('%s', '%s', '%s')",
-		                                 cached_escaped_connection_string, cached_escaped_database_name,
-		                                 escaped_collection_name);
-		
+
+		result->sql = StringUtil::Format("SELECT * FROM mongo_scan('%s', '%s', '%s')", cached_escaped_connection_string,
+		                                 cached_escaped_database_name, escaped_collection_name);
+
 		auto start_parse = std::chrono::high_resolution_clock::now();
 		auto view_info = CreateViewInfo::FromSelect(context, std::move(result));
 		auto end_parse = std::chrono::high_resolution_clock::now();
 		auto parse_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_parse - start_parse).count();
-		
+
 		// Log only outliers (SQL parsing is the critical bottleneck)
 		if (parse_ms > 5000) {
-			std::cerr << "[MongoCollectionGenerator] WARNING: SQL parsing for '" << collection_name << "' took " << parse_ms << "ms" << std::endl;
+			std::cerr << "[MongoCollectionGenerator] WARNING: SQL parsing for '" << collection_name << "' took "
+			          << parse_ms << "ms" << std::endl;
 		}
-		
+
 		auto entry = make_uniq_base<CatalogEntry, ViewCatalogEntry>(catalog, schema, *view_info);
-		
+
 		auto end_total = std::chrono::high_resolution_clock::now();
 		auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
 		if (total_ms > 1000) {
-			std::cerr << "[MongoCollectionGenerator] CreateEntryForCollection('" << collection_name << "') took " << total_ms << "ms" << std::endl;
+			std::cerr << "[MongoCollectionGenerator] CreateEntryForCollection('" << collection_name << "') took "
+			          << total_ms << "ms" << std::endl;
 		}
 		return entry;
 	}
 
 private:
-	mongocxx::client& GetOrCreateClient() {
+	mongocxx::client &GetOrCreateClient() {
 		if (!cached_client || cached_connection_string != connection_string) {
 			string conn_str = connection_string;
 			bool has_query_params = conn_str.find('?') != string::npos;
-			
+
 			if (conn_str.find("connectTimeoutMS") == string::npos) {
 				if (!has_query_params) {
 					conn_str += "?connectTimeoutMS=10000";
@@ -126,7 +127,7 @@ private:
 					conn_str += "&serverSelectionTimeoutMS=10000";
 				}
 			}
-			
+
 			mongocxx::uri uri(conn_str);
 			cached_client = make_uniq<mongocxx::client>(uri);
 			cached_connection_string = connection_string;
@@ -138,15 +139,13 @@ private:
 		if (collections_loaded) {
 			return;
 		}
-		
+
 		// Skip DuckDB internal schemas
-		if (database_name == "main" || 
-		    database_name == "information_schema" || 
-		    database_name == "pg_catalog") {
+		if (database_name == "main" || database_name == "information_schema" || database_name == "pg_catalog") {
 			collections_loaded = true;
 			return;
 		}
-		
+
 		// Check cache first
 		if (mongo_catalog) {
 			auto cached = mongo_catalog->GetCachedCollectionNames(database_name);
@@ -156,22 +155,23 @@ private:
 				return;
 			}
 		}
-		
+
 		collections_loaded = true;
 
 		try {
-			auto& client = GetOrCreateClient();
+			auto &client = GetOrCreateClient();
 			auto mongo_db = client[database_name];
 			auto start_list = std::chrono::high_resolution_clock::now();
 			auto collections = mongo_db.list_collection_names();
 			auto end_list = std::chrono::high_resolution_clock::now();
 			auto list_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_list - start_list).count();
-			
+
 			// Log slow network calls
 			if (list_ms > 5000) {
-				std::cerr << "[MongoCollectionGenerator] list_collection_names('" << database_name << "') took " << list_ms << "ms" << std::endl;
+				std::cerr << "[MongoCollectionGenerator] list_collection_names('" << database_name << "') took "
+				          << list_ms << "ms" << std::endl;
 			}
-			
+
 			vector<string> filtered_collections;
 			for (const auto &collection : collections) {
 				if (StringUtil::StartsWith(collection, "system.")) {
@@ -180,7 +180,7 @@ private:
 				filtered_collections.push_back(collection);
 				collection_names.push_back(collection);
 			}
-			
+
 			if (mongo_catalog && !filtered_collections.empty()) {
 				mongo_catalog->CacheCollectionNames(database_name, filtered_collections);
 			}
@@ -211,7 +211,7 @@ void MongoCatalog::Initialize(bool load_builtin) {
 
 optional_ptr<CatalogEntry> MongoCatalog::CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) {
 	lock_guard<mutex> lock(schemas_lock);
-	
+
 	// Check if schema already exists
 	auto it = schemas.find(info.schema);
 	if (it != schemas.end()) {
@@ -233,13 +233,13 @@ optional_ptr<CatalogEntry> MongoCatalog::CreateSchema(CatalogTransaction transac
 	auto schema_entry = make_uniq<MongoSchemaEntry>(*this, info);
 	auto result = schema_entry.get();
 	schemas[info.schema] = shared_ptr<MongoSchemaEntry>(schema_entry.release());
-	
+
 	return result;
 }
 
 void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) {
 	auto start_total = std::chrono::high_resolution_clock::now();
-	
+
 	{
 		lock_guard<mutex> lock(schemas_lock);
 		if (schemas_scanned) {
@@ -250,7 +250,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 		}
 		schemas_scanned = true;
 	}
-	
+
 	auto client = GetClient();
 	vector<string> databases;
 
@@ -269,8 +269,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	string first_non_system_schema;
 
 	for (const auto &schema_name : databases) {
-		if (database_name.empty() &&
-		    (schema_name == "admin" || schema_name == "local" || schema_name == "config")) {
+		if (database_name.empty() && (schema_name == "admin" || schema_name == "local" || schema_name == "config")) {
 			continue;
 		}
 
@@ -282,9 +281,9 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 		} else {
 			actual_schema_name = schema_name;
 		}
-		
-		if (first_non_system_schema.empty() && 
-		    actual_schema_name != "admin" && actual_schema_name != "local" && actual_schema_name != "config") {
+
+		if (first_non_system_schema.empty() && actual_schema_name != "admin" && actual_schema_name != "local" &&
+		    actual_schema_name != "config") {
 			first_non_system_schema = actual_schema_name;
 		}
 
@@ -301,7 +300,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 			callback(schema);
 		}
 	}
-		
+
 	if (default_schema.empty()) {
 		if (!database_name.empty()) {
 			default_schema = database_name;
@@ -309,7 +308,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 			default_schema = first_non_system_schema;
 		}
 	}
-	
+
 	auto end_total = std::chrono::high_resolution_clock::now();
 	auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
 	if (total_ms > 1000) {
@@ -325,7 +324,7 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 	if (schema_name.empty()) {
 		schema_name = GetDefaultSchema();
 	}
-	
+
 	if (!schema_name.empty() && !database_name.empty()) {
 		lock_guard<mutex> lock(schemas_lock);
 		auto it = schemas.find(database_name);
@@ -384,17 +383,17 @@ PhysicalOperator &MongoCatalog::PlanCreateTableAs(ClientContext &context, Physic
 }
 
 PhysicalOperator &MongoCatalog::PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner, LogicalInsert &op,
-                                         optional_ptr<PhysicalOperator> plan) {
+                                           optional_ptr<PhysicalOperator> plan) {
 	throw NotImplementedException("INSERT is not supported for MongoDB catalogs");
 }
 
 PhysicalOperator &MongoCatalog::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,
-                                          PhysicalOperator &plan) {
+                                           PhysicalOperator &plan) {
 	throw NotImplementedException("DELETE is not supported for MongoDB catalogs");
 }
 
 PhysicalOperator &MongoCatalog::PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
-                                         PhysicalOperator &plan) {
+                                           PhysicalOperator &plan) {
 	throw NotImplementedException("UPDATE is not supported for MongoDB catalogs");
 }
 

@@ -15,7 +15,7 @@ public:
 	explicit MongoCatalog(AttachedDatabase &db, const string &connection_string, const string &database_name = "");
 
 	string connection_string;
-	string database_name; // Specific database to use (empty means all databases)
+	string database_name;  // Specific database to use (empty means all databases)
 	string default_schema; // Default schema name (set during ScanSchemas)
 
 	void Initialize(bool load_builtin) override;
@@ -38,12 +38,11 @@ public:
 	PhysicalOperator &PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner, LogicalInsert &op,
 	                             optional_ptr<PhysicalOperator> plan) override;
 	PhysicalOperator &PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,
-	                            PhysicalOperator &plan) override;
+	                             PhysicalOperator &plan) override;
 	PhysicalOperator &PlanUpdate(ClientContext &context, PhysicalPlanGenerator &planner, LogicalUpdate &op,
-	                            PhysicalOperator &plan) override;
+	                             PhysicalOperator &plan) override;
 
 	void DropSchema(ClientContext &context, DropInfo &info) override;
-
 
 	// Override to prevent accessing non-existent storage manager.
 	bool InMemory() override {

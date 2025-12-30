@@ -21,23 +21,22 @@
 #include <iostream>
 namespace duckdb {
 
-MongoSchemaEntry::MongoSchemaEntry(Catalog &catalog, CreateSchemaInfo &info)
-    : SchemaCatalogEntry(catalog, info) {
+MongoSchemaEntry::MongoSchemaEntry(Catalog &catalog, CreateSchemaInfo &info) : SchemaCatalogEntry(catalog, info) {
 }
 
 optional_ptr<CatalogEntry> MongoSchemaEntry::LookupEntry(CatalogTransaction transaction,
                                                          const EntryLookupInfo &lookup_info) {
-	if (lookup_info.GetCatalogType() != CatalogType::VIEW_ENTRY && 
+	if (lookup_info.GetCatalogType() != CatalogType::VIEW_ENTRY &&
 	    lookup_info.GetCatalogType() != CatalogType::TABLE_ENTRY) {
 		return nullptr;
 	}
 
 	const auto &entry_name = lookup_info.GetEntryName();
-	
+
 	if (!is_loaded && transaction.context) {
 		TryLoadEntries(*transaction.context);
 	}
-	
+
 	lock_guard<mutex> lock(entry_lock);
 
 	auto it = views.find(entry_name);
@@ -67,7 +66,7 @@ void MongoSchemaEntry::SetDefaultGenerator(unique_ptr<DefaultGenerator> generato
 
 optional_ptr<CatalogEntry> MongoSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
 	lock_guard<mutex> lock(entry_lock);
-	
+
 	// Check if view already exists
 	auto it = views.find(info.view_name);
 	if (it != views.end()) {
@@ -82,7 +81,7 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::CreateView(CatalogTransaction trans
 	auto result = view_entry.get();
 	auto shared_entry = shared_ptr<CatalogEntry>(view_entry.release());
 	views[info.view_name] = shared_entry;
-	
+
 	return result;
 }
 
@@ -104,12 +103,12 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::CreateSequence(CatalogTransaction t
 }
 
 optional_ptr<CatalogEntry> MongoSchemaEntry::CreateTableFunction(CatalogTransaction transaction,
-                                                                CreateTableFunctionInfo &info) {
+                                                                 CreateTableFunctionInfo &info) {
 	throw NotImplementedException("CREATE TABLE FUNCTION is not supported for MongoDB catalogs");
 }
 
 optional_ptr<CatalogEntry> MongoSchemaEntry::CreateCopyFunction(CatalogTransaction transaction,
-                                                               CreateCopyFunctionInfo &info) {
+                                                                CreateCopyFunctionInfo &info) {
 	throw NotImplementedException("CREATE COPY FUNCTION is not supported for MongoDB catalogs");
 }
 
@@ -118,7 +117,8 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::CreatePragmaFunction(CatalogTransac
 	throw NotImplementedException("CREATE PRAGMA FUNCTION is not supported for MongoDB catalogs");
 }
 
-optional_ptr<CatalogEntry> MongoSchemaEntry::CreateCollation(CatalogTransaction transaction, CreateCollationInfo &info) {
+optional_ptr<CatalogEntry> MongoSchemaEntry::CreateCollation(CatalogTransaction transaction,
+                                                             CreateCollationInfo &info) {
 	throw NotImplementedException("CREATE COLLATION is not supported for MongoDB catalogs");
 }
 
@@ -134,17 +134,17 @@ void MongoSchemaEntry::TryLoadEntries(ClientContext &context) {
 	if (is_loaded) {
 		return;
 	}
-	
+
 	if (!default_generator) {
 		is_loaded = true;
 		return;
 	}
-	
+
 	lock_guard<mutex> load_guard(load_lock);
 	if (is_loaded) {
 		return;
 	}
-	
+
 	vector<string> collection_names;
 	try {
 		collection_names = default_generator->GetDefaultEntries();
@@ -155,7 +155,7 @@ void MongoSchemaEntry::TryLoadEntries(ClientContext &context) {
 		is_loaded = true;
 		return;
 	}
-	
+
 	lock_guard<mutex> entry_guard(entry_lock);
 	loaded_collection_names = collection_names;
 	is_loaded = true;
@@ -163,12 +163,12 @@ void MongoSchemaEntry::TryLoadEntries(ClientContext &context) {
 
 shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &context, const string &collection_name) {
 	lock_guard<mutex> lock(entry_lock);
-	
+
 	auto it = views.find(collection_name);
 	if (it != views.end()) {
 		return it->second;
 	}
-	
+
 	if (default_generator) {
 		try {
 			auto default_entry = default_generator->CreateDefaultEntry(context, collection_name);
@@ -184,32 +184,33 @@ shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &c
 			return nullptr;
 		}
 	}
-	
+
 	return nullptr;
 }
 
-void MongoSchemaEntry::Scan(ClientContext &context, CatalogType type, const std::function<void(CatalogEntry &)> &callback) {
+void MongoSchemaEntry::Scan(ClientContext &context, CatalogType type,
+                            const std::function<void(CatalogEntry &)> &callback) {
 	auto start_total = std::chrono::high_resolution_clock::now();
-	
+
 	if (type == CatalogType::VIEW_ENTRY || type == CatalogType::TABLE_ENTRY) {
 		if (!is_loaded && default_generator) {
 			TryLoadEntries(context);
 		}
-		
+
 		vector<string> collections_to_create;
 		{
 			lock_guard<mutex> lock(entry_lock);
 			for (auto &[name, entry] : views) {
 				callback(*entry);
 			}
-			
+
 			for (const auto &collection_name : loaded_collection_names) {
 				if (views.find(collection_name) == views.end()) {
 					collections_to_create.push_back(collection_name);
 				}
 			}
 		}
-		
+
 		for (const auto &collection_name : collections_to_create) {
 			auto entry = GetOrCreateViewEntry(context, collection_name);
 			if (entry) {
@@ -217,7 +218,7 @@ void MongoSchemaEntry::Scan(ClientContext &context, CatalogType type, const std:
 			}
 		}
 	}
-	
+
 	auto end_total = std::chrono::high_resolution_clock::now();
 	auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
 	if (total_ms > 1000) {
@@ -249,4 +250,3 @@ void MongoSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 }
 
 } // namespace duckdb
-

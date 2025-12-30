@@ -14,7 +14,7 @@
 #define REQUIRE_NO_FAIL(result) REQUIRE(!(result)->HasError())
 
 // Simple main function for running the test
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[]) {
 	return Catch::Session().run(argc, argv);
 }
 
@@ -26,7 +26,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	std::string connection_string = "mongodb+srv://" + std::string(username) + ":" + std::string(password) +
-	                           "@adl-testing-azure-amste.ki9ie.mongodb.net?retryWrites=true&w=majority";
+	                                "@adl-testing-azure-amste.ki9ie.mongodb.net?retryWrites=true&w=majority";
 
 	duckdb::DuckDB db(nullptr);
 	db.LoadStaticExtension<duckdb::MongoExtension>();
@@ -38,7 +38,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] ATTACH took " << duration << "ms" << std::endl;
-		
+
 		// Verify attachment
 		auto result = con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db'");
 		REQUIRE(!result->HasError());
@@ -47,13 +47,14 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 
 	SECTION("Verify expected schemas are present") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
-		
+
 		auto start = std::chrono::high_resolution_clock::now();
-		auto result = con.Query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' AND schema_name IN ('oa_smoke_test', 'smoketests') ORDER BY schema_name");
+		auto result = con.Query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' "
+		                        "AND schema_name IN ('oa_smoke_test', 'smoketests') ORDER BY schema_name");
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Schema query took " << duration << "ms" << std::endl;
-		
+
 		REQUIRE(!result->HasError());
 		REQUIRE(result->RowCount() == 2);
 		auto chunk = result->Fetch();
@@ -67,7 +68,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 
 	SECTION("USE command with explicit schema and verify context") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
-		
+
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
 		auto result = con.Query("SELECT current_database(), current_schema()");
 		REQUIRE(!result->HasError());
@@ -76,17 +77,17 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		REQUIRE(chunk->GetValue(0, 0).ToString() == "atlas_db");
 		REQUIRE(chunk->GetValue(1, 0).ToString() == "smoketests");
 	}
-	
+
 	SECTION("SHOW TABLES - verify test collection exists") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
-		
+
 		auto start = std::chrono::high_resolution_clock::now();
 		auto result = con.Query("SHOW TABLES");
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] SHOW TABLES took " << duration << "ms" << std::endl;
-		
+
 		REQUIRE(!result->HasError());
 		REQUIRE(result->RowCount() == 1);
 		auto chunk = result->Fetch();
@@ -96,7 +97,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	SECTION("Query and verify data in test collection") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
-		
+
 		// Expected: 2 documents with a=1, b="smoke" and a=2, b="test"
 		auto start = std::chrono::high_resolution_clock::now();
 		auto result = con.Query("SELECT * FROM test ORDER BY a");
@@ -108,7 +109,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		}
 		REQUIRE(!result->HasError());
 		REQUIRE(result->RowCount() == 2);
-		
+
 		// Find column indices
 		idx_t a_col = duckdb::DConstants::INVALID_INDEX, b_col = duckdb::DConstants::INVALID_INDEX;
 		for (idx_t i = 0; i < result->ColumnCount(); i++) {
@@ -121,12 +122,12 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		}
 		REQUIRE(a_col != duckdb::DConstants::INVALID_INDEX);
 		REQUIRE(b_col != duckdb::DConstants::INVALID_INDEX);
-		
+
 		// Verify data values (ORDER BY a ensures a=1 comes first, then a=2)
 		auto chunk = result->Fetch();
 		REQUIRE(chunk);
 		REQUIRE(chunk->size() == 2);
-		
+
 		// With ORDER BY a, first row should be a=1, b="smoke", second row should be a=2, b="test"
 		REQUIRE(chunk->GetValue(a_col, 0).GetValue<int64_t>() == 1);
 		REQUIRE(chunk->GetValue(b_col, 0).GetValue<std::string>() == "smoke");
@@ -136,35 +137,37 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 
 	SECTION("Query information_schema for tables in oa_smoke_test") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
-		
+
 		auto start = std::chrono::high_resolution_clock::now();
-		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10");
+		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
+		                        "table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10");
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Query information_schema.tables took " << duration << "ms" << std::endl;
-		
+
 		REQUIRE(!result->HasError());
 		REQUIRE(result->RowCount() > 0); // Verify we get results
 		auto chunk = result->Fetch();
 		REQUIRE(chunk);
 		REQUIRE(chunk->size() > 0);
 	}
-	
+
 	SECTION("Query a collection from oa_smoke_test schema") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
-		
+
 		auto start = std::chrono::high_resolution_clock::now();
-		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10");
+		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
+		                        "table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10");
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Query information_schema.tables (oa_smoke_test) took " << duration << "ms" << std::endl;
-		
+
 		REQUIRE(!result->HasError());
 		REQUIRE(result->RowCount() > 0);
 		auto chunk = result->Fetch();
 		REQUIRE(chunk);
 		REQUIRE(chunk->size() > 0);
-		
+
 		std::string table_name = chunk->GetValue(0, 0).ToString();
 		start = std::chrono::high_resolution_clock::now();
 		result = con.Query("SELECT COUNT(*) FROM atlas_db.\"oa_smoke_test\".\"" + table_name + "\"");
@@ -181,7 +184,8 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("Test mongo_scan function directly") {
-		auto result = con.Query("SELECT COUNT(*) FROM mongo_scan('" + connection_string + "', 'admin', 'system.version')");
+		auto result =
+		    con.Query("SELECT COUNT(*) FROM mongo_scan('" + connection_string + "', 'admin', 'system.version')");
 		if (!result->HasError()) {
 			// If query succeeds, verify we get a count
 			REQUIRE(result->RowCount() == 1);
@@ -193,7 +197,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 
 	SECTION("Cleanup: DETACH") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
-		
+
 		duckdb::Connection cleanup_con(db);
 		auto detach_result = cleanup_con.Query("DETACH atlas_db");
 		if (!detach_result->HasError()) {
@@ -204,4 +208,3 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		}
 	}
 }
-
