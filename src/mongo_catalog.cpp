@@ -17,8 +17,6 @@
 #include <bsoncxx/builder/basic/document.hpp>
 #include <mongocxx/exception/exception.hpp>
 #include <mongocxx/client.hpp>
-#include <chrono>
-#include <iostream>
 
 namespace duckdb {
 
@@ -58,13 +56,13 @@ public:
 	}
 
 	unique_ptr<CatalogEntry> CreateEntryForCollection(ClientContext &context, const string &collection_name) {
-		auto start_total = std::chrono::high_resolution_clock::now();
 		auto result = make_uniq<CreateViewInfo>();
 		result->schema = schema.name;
 		result->view_name = collection_name;
 
 		auto escape_sql_string = [](const string &str) -> string {
 			string result;
+			result.reserve(str.size() + str.size() / 10);
 			for (char c : str) {
 				if (c == '\'') {
 					result += "''";
@@ -84,25 +82,8 @@ public:
 		result->sql = StringUtil::Format("SELECT * FROM mongo_scan('%s', '%s', '%s')", cached_escaped_connection_string,
 		                                 cached_escaped_database_name, escaped_collection_name);
 
-		auto start_parse = std::chrono::high_resolution_clock::now();
 		auto view_info = CreateViewInfo::FromSelect(context, std::move(result));
-		auto end_parse = std::chrono::high_resolution_clock::now();
-		auto parse_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_parse - start_parse).count();
-
-		// Log only outliers (SQL parsing is the critical bottleneck)
-		if (parse_ms > 5000) {
-			std::cerr << "[MongoCollectionGenerator] WARNING: SQL parsing for '" << collection_name << "' took "
-			          << parse_ms << "ms" << std::endl;
-		}
-
 		auto entry = make_uniq_base<CatalogEntry, ViewCatalogEntry>(catalog, schema, *view_info);
-
-		auto end_total = std::chrono::high_resolution_clock::now();
-		auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
-		if (total_ms > 1000) {
-			std::cerr << "[MongoCollectionGenerator] CreateEntryForCollection('" << collection_name << "') took "
-			          << total_ms << "ms" << std::endl;
-		}
 		return entry;
 	}
 
@@ -114,17 +95,24 @@ private:
 
 			if (conn_str.find("connectTimeoutMS") == string::npos) {
 				if (!has_query_params) {
-					conn_str += "?connectTimeoutMS=10000";
+					conn_str += "?connectTimeoutMS=5000";
 					has_query_params = true;
 				} else {
-					conn_str += "&connectTimeoutMS=10000";
+					conn_str += "&connectTimeoutMS=5000";
 				}
 			}
 			if (conn_str.find("serverSelectionTimeoutMS") == string::npos) {
 				if (!has_query_params) {
-					conn_str += "?serverSelectionTimeoutMS=10000";
+					conn_str += "?serverSelectionTimeoutMS=5000";
 				} else {
-					conn_str += "&serverSelectionTimeoutMS=10000";
+					conn_str += "&serverSelectionTimeoutMS=5000";
+				}
+			}
+			if (conn_str.find("socketTimeoutMS") == string::npos) {
+				if (!has_query_params) {
+					conn_str += "?socketTimeoutMS=5000";
+				} else {
+					conn_str += "&socketTimeoutMS=5000";
 				}
 			}
 
@@ -161,18 +149,12 @@ private:
 		try {
 			auto &client = GetOrCreateClient();
 			auto mongo_db = client[database_name];
-			auto start_list = std::chrono::high_resolution_clock::now();
 			auto collections = mongo_db.list_collection_names();
-			auto end_list = std::chrono::high_resolution_clock::now();
-			auto list_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_list - start_list).count();
-
-			// Log slow network calls
-			if (list_ms > 5000) {
-				std::cerr << "[MongoCollectionGenerator] list_collection_names('" << database_name << "') took "
-				          << list_ms << "ms" << std::endl;
-			}
 
 			vector<string> filtered_collections;
+			filtered_collections.reserve(collections.size());
+			collection_names.reserve(collections.size());
+
 			for (const auto &collection : collections) {
 				if (StringUtil::StartsWith(collection, "system.")) {
 					continue;
@@ -244,8 +226,6 @@ optional_ptr<CatalogEntry> MongoCatalog::CreateSchema(CatalogTransaction transac
 }
 
 void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(SchemaCatalogEntry &)> callback) {
-	auto start_total = std::chrono::high_resolution_clock::now();
-
 	{
 		lock_guard<mutex> lock(schemas_lock);
 		if (schemas_scanned) {
@@ -330,12 +310,6 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 		} else {
 			default_schema = "main";
 		}
-	}
-
-	auto end_total = std::chrono::high_resolution_clock::now();
-	auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
-	if (total_ms > 1000) {
-		std::cerr << "[MongoCatalog] ScanSchemas() took " << total_ms << "ms" << std::endl;
 	}
 }
 

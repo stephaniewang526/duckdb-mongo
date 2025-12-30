@@ -90,7 +90,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 			info_schemas.insert(schemas_chunk->GetValue(0, i).ToString());
 		}
 		
-		// Verify "main" is present (DuckDB convention)
+		// Verify "main" is present
 		REQUIRE(info_schemas.count("main") == 1);
 		// Verify MongoDB databases are present
 		REQUIRE(info_schemas.count("oa_smoke_test") == 1);

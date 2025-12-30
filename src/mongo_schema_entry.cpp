@@ -17,8 +17,6 @@
 #include "duckdb/main/client_context.hpp"
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/common/exception.hpp"
-#include <chrono>
-#include <iostream>
 namespace duckdb {
 
 MongoSchemaEntry::MongoSchemaEntry(Catalog &catalog, CreateSchemaInfo &info) : SchemaCatalogEntry(catalog, info) {
@@ -190,20 +188,21 @@ shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &c
 
 void MongoSchemaEntry::Scan(ClientContext &context, CatalogType type,
                             const std::function<void(CatalogEntry &)> &callback) {
-	auto start_total = std::chrono::high_resolution_clock::now();
-
 	if (type == CatalogType::VIEW_ENTRY || type == CatalogType::TABLE_ENTRY) {
 		if (!is_loaded && default_generator) {
 			TryLoadEntries(context);
 		}
 
-		vector<string> collections_to_create;
 		{
 			lock_guard<mutex> lock(entry_lock);
 			for (auto &[name, entry] : views) {
 				callback(*entry);
 			}
+		}
 
+		vector<string> collections_to_create;
+		{
+			lock_guard<mutex> lock(entry_lock);
 			for (const auto &collection_name : loaded_collection_names) {
 				if (views.find(collection_name) == views.end()) {
 					collections_to_create.push_back(collection_name);
@@ -217,12 +216,6 @@ void MongoSchemaEntry::Scan(ClientContext &context, CatalogType type,
 				callback(*entry);
 			}
 		}
-	}
-
-	auto end_total = std::chrono::high_resolution_clock::now();
-	auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_total - start_total).count();
-	if (total_ms > 1000) {
-		std::cerr << "[MongoSchemaEntry] Scan() took " << total_ms << "ms" << std::endl;
 	}
 }
 
