@@ -159,6 +159,14 @@ void MongoSchemaEntry::TryLoadEntries(ClientContext &context) {
 	is_loaded = true;
 }
 
+void MongoSchemaEntry::InvalidateCache() {
+	lock_guard<mutex> lock(entry_lock);
+	lock_guard<mutex> load_guard(load_lock);
+	is_loaded = false;
+	loaded_collection_names.clear();
+	views.clear();
+}
+
 shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &context, const string &collection_name) {
 	lock_guard<mutex> lock(entry_lock);
 
@@ -189,27 +197,51 @@ shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &c
 void MongoSchemaEntry::Scan(ClientContext &context, CatalogType type,
                             const std::function<void(CatalogEntry &)> &callback) {
 	if (type == CatalogType::VIEW_ENTRY || type == CatalogType::TABLE_ENTRY) {
-		if (!is_loaded && default_generator) {
+		// Always reload entries to ensure fresh data
+		is_loaded = false;
+		if (default_generator) {
 			TryLoadEntries(context);
 		}
 
-		{
-			lock_guard<mutex> lock(entry_lock);
-			for (auto &[name, entry] : views) {
-				callback(*entry);
-			}
-		}
-
+		vector<string> collections_to_remove;
 		vector<string> collections_to_create;
+		
 		{
 			lock_guard<mutex> lock(entry_lock);
+			
+			// Find entries that no longer exist in MongoDB
+			for (const auto &[name, entry] : views) {
+				bool found = false;
+				for (const auto &collection_name : loaded_collection_names) {
+					if (StringUtil::CIEquals(name, collection_name)) {
+						found = true;
+						break;
+					}
+				}
+				if (!found) {
+					collections_to_remove.push_back(name);
+				}
+			}
+			
+			// Remove stale entries
+			for (const auto &name : collections_to_remove) {
+				views.erase(name);
+			}
+			
+			// Find new collections that need entries
 			for (const auto &collection_name : loaded_collection_names) {
 				if (views.find(collection_name) == views.end()) {
 					collections_to_create.push_back(collection_name);
 				}
 			}
+			
+			// Callback existing entries
+			for (auto &[name, entry] : views) {
+				callback(*entry);
+			}
 		}
 
+		// Create entries for new collections (outside lock since GetOrCreateViewEntry acquires it)
 		for (const auto &collection_name : collections_to_create) {
 			auto entry = GetOrCreateViewEntry(context, collection_name);
 			if (entry) {

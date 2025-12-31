@@ -56,6 +56,27 @@ public:
 	}
 
 	unique_ptr<CatalogEntry> CreateEntryForCollection(ClientContext &context, const string &collection_name) {
+		// Check cache to avoid expensive SQL parsing
+		if (mongo_catalog) {
+			auto cached_info = mongo_catalog->GetCachedViewInfo(database_name, collection_name);
+			if (cached_info) {
+				auto info_copy = make_uniq<CreateViewInfo>();
+				info_copy->schema = schema.name;
+				info_copy->view_name = collection_name;
+				info_copy->sql = cached_info->sql;
+				info_copy->query = cached_info->query ? unique_ptr_cast<SQLStatement, SelectStatement>(cached_info->query->Copy()) : nullptr;
+				info_copy->types = cached_info->types;
+				info_copy->names = cached_info->names;
+				info_copy->aliases = cached_info->aliases;
+				info_copy->temporary = cached_info->temporary;
+				info_copy->internal = cached_info->internal;
+				info_copy->dependencies = cached_info->dependencies;
+				
+				auto entry = make_uniq_base<CatalogEntry, ViewCatalogEntry>(catalog, schema, *info_copy);
+				return entry;
+			}
+		}
+
 		auto result = make_uniq<CreateViewInfo>();
 		result->schema = schema.name;
 		result->view_name = collection_name;
@@ -83,6 +104,11 @@ public:
 		                                 cached_escaped_database_name, escaped_collection_name);
 
 		auto view_info = CreateViewInfo::FromSelect(context, std::move(result));
+		
+		if (mongo_catalog) {
+			mongo_catalog->CacheViewInfo(database_name, collection_name, *view_info);
+		}
+		
 		auto entry = make_uniq_base<CatalogEntry, ViewCatalogEntry>(catalog, schema, *view_info);
 		return entry;
 	}
@@ -134,16 +160,7 @@ private:
 			return;
 		}
 
-		// Check cache first
-		if (mongo_catalog) {
-			auto cached = mongo_catalog->GetCachedCollectionNames(database_name);
-			if (!cached.empty()) {
-				collection_names = cached;
-				collections_loaded = true;
-				return;
-			}
-		}
-
+		// Always fetch fresh collection names from MongoDB
 		collections_loaded = true;
 
 		try {
@@ -186,7 +203,7 @@ private:
 MongoCatalog::MongoCatalog(AttachedDatabase &db, const string &connection_string, const string &database_name)
     : Catalog(db), connection_string(connection_string), database_name(database_name), schemas_scanned(false) {
 	GetMongoInstance();
-	// Set default schema early (similar to Postgres extension which sets "public" in constructor)
+	// Set default schema early
 	if (database_name.empty()) {
 		default_schema = "main";
 	} else {
@@ -254,8 +271,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	auto system_transaction = CatalogTransaction::GetSystemTransaction(GetDatabase());
 	string first_non_system_schema;
 
-	// When database_name is empty (scanning all databases), create "main" schema first
-	// This follows DuckDB convention, similar to how Postgres defaults to "public"
+	// Create "main" schema when scanning all databases
 	if (database_name.empty()) {
 		CreateSchemaInfo main_schema_info;
 		main_schema_info.schema = "main";
@@ -422,6 +438,62 @@ vector<string> MongoCatalog::GetCachedCollectionNames(const string &db_name) con
 void MongoCatalog::CacheCollectionNames(const string &db_name, const vector<string> &collections) {
 	lock_guard<mutex> lock(collection_cache_lock);
 	collection_cache[db_name] = collections;
+}
+
+shared_ptr<CreateViewInfo> MongoCatalog::GetCachedViewInfo(const string &db_name, const string &collection_name) const {
+	lock_guard<mutex> lock(view_info_cache_lock);
+	string cache_key = db_name + ":" + collection_name;
+	auto it = view_info_cache.find(cache_key);
+	if (it != view_info_cache.end()) {
+		return it->second;
+	}
+	return nullptr;
+}
+
+void MongoCatalog::CacheViewInfo(const string &db_name, const string &collection_name, const CreateViewInfo &info) {
+	lock_guard<mutex> lock(view_info_cache_lock);
+	string cache_key = db_name + ":" + collection_name;
+	auto cached = make_shared_ptr<CreateViewInfo>();
+	cached->schema = info.schema;
+	cached->view_name = info.view_name;
+	cached->sql = info.sql;
+	cached->query = info.query ? unique_ptr_cast<SQLStatement, SelectStatement>(info.query->Copy()) : nullptr;
+	cached->types = info.types;
+	cached->names = info.names;
+	cached->aliases = info.aliases;
+	cached->temporary = info.temporary;
+	cached->internal = info.internal;
+	cached->dependencies = info.dependencies;
+	view_info_cache[cache_key] = cached;
+}
+
+void MongoCatalog::InvalidateCollectionNamesCache(const string &db_name) {
+	lock_guard<mutex> lock(collection_cache_lock);
+	collection_cache.erase(db_name);
+}
+
+void MongoCatalog::InvalidateViewInfoCache(const string &db_name, const string &collection_name) {
+	lock_guard<mutex> lock(view_info_cache_lock);
+	string cache_key = db_name + ":" + collection_name;
+	view_info_cache.erase(cache_key);
+}
+
+void MongoCatalog::ClearCache() {
+	{
+		lock_guard<mutex> lock(collection_cache_lock);
+		collection_cache.clear();
+	}
+	{
+		lock_guard<mutex> lock(view_info_cache_lock);
+		view_info_cache.clear();
+	}
+	{
+		lock_guard<mutex> lock(schemas_lock);
+		for (auto &[name, schema] : schemas) {
+			schema->InvalidateCache();
+		}
+		schemas_scanned = false;
+	}
 }
 
 } // namespace duckdb

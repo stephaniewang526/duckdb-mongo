@@ -43,6 +43,9 @@ public:
 	void Scan(CatalogType type, const std::function<void(CatalogEntry &)> &callback) override;
 	void DropEntry(ClientContext &context, DropInfo &info) override;
 
+	// Invalidate cache to force refresh of collection list
+	void InvalidateCache();
+
 private:
 	void TryLoadEntries(ClientContext &context);
 	// Helper to create view entry lazily

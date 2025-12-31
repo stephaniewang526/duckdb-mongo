@@ -4,6 +4,7 @@
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/storage/database_size.hpp"
 #include "duckdb/common/mutex.hpp"
+#include "duckdb/parser/parsed_data/create_view_info.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_schema_entry.hpp"
 #include <mongocxx/client.hpp>
@@ -44,6 +45,9 @@ public:
 
 	void DropSchema(ClientContext &context, DropInfo &info) override;
 
+	// Clear cache to force refresh
+	void ClearCache();
+
 	// Override to prevent accessing non-existent storage manager.
 	bool InMemory() override {
 		return false;
@@ -76,7 +80,6 @@ public:
 		return string();
 	}
 
-	// Get default schema name (similar to Postgres extension)
 	string GetDefaultSchema() const override {
 		if (!default_schema.empty()) {
 			return default_schema;
@@ -94,6 +97,15 @@ public:
 	vector<string> GetCachedCollectionNames(const string &db_name) const;
 	// Cache collection names for a database
 	void CacheCollectionNames(const string &db_name, const vector<string> &collections);
+	// Invalidate collection names cache for a database (forces refresh on next access)
+	void InvalidateCollectionNamesCache(const string &db_name);
+
+	// Get cached CreateViewInfo for a collection (to avoid re-parsing SQL)
+	shared_ptr<CreateViewInfo> GetCachedViewInfo(const string &db_name, const string &collection_name) const;
+	// Cache CreateViewInfo for a collection
+	void CacheViewInfo(const string &db_name, const string &collection_name, const CreateViewInfo &info);
+	// Invalidate CreateViewInfo cache for a collection
+	void InvalidateViewInfoCache(const string &db_name, const string &collection_name);
 
 private:
 	mutable mutex schemas_lock;
@@ -102,6 +114,10 @@ private:
 	// Cache collection names per database (shared across schemas)
 	mutable mutex collection_cache_lock;
 	unordered_map<string, vector<string>> collection_cache; // Key: database_name, Value: collection names
+	
+	// Cache parsed CreateViewInfo per collection to avoid re-parsing SQL
+	mutable mutex view_info_cache_lock;
+	unordered_map<string, shared_ptr<CreateViewInfo>> view_info_cache; // Key: "db_name:collection_name", Value: cached CreateViewInfo
 };
 
 } // namespace duckdb

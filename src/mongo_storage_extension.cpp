@@ -16,7 +16,7 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 	// Parse it and convert to MongoDB connection string format
 	if (!StringUtil::StartsWith(connection_string, "mongodb://") &&
 	    !StringUtil::StartsWith(connection_string, "mongodb+srv://")) {
-		// Parse key=value pairs (similar to Postgres libpq format)
+		// Parse key=value pairs
 		unordered_map<string, string> params;
 		vector<string> pairs = StringUtil::Split(connection_string, " ");
 
