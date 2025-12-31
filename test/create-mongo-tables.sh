@@ -197,7 +197,18 @@ echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
 echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested"
 echo ""
-echo "To use in tests, set:"
-echo "  export MONGODB_TEST_DATABASE_AVAILABLE=1"
-echo "  export MONGO_TEST_CONNECTION='mongodb://$MONGO_HOST:$MONGO_PORT/$MONGO_DB'"
+
+# Export environment variables for tests
+export MONGODB_TEST_DATABASE_AVAILABLE=1
+export MONGO_TEST_CONNECTION="mongodb://$MONGO_HOST:$MONGO_PORT/$MONGO_DB"
+
+echo "Environment variables set:"
+echo "  MONGODB_TEST_DATABASE_AVAILABLE=1"
+echo "  MONGO_TEST_CONNECTION='$MONGO_TEST_CONNECTION'"
+echo ""
+echo "Note: If you run this script directly (not sourced), these variables will only be"
+echo "available in the current shell session. To make them available in your shell, run:"
+echo "  source test/create-mongo-tables.sh"
+echo "or"
+echo "  . test/create-mongo-tables.sh"
 

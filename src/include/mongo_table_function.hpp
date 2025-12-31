@@ -64,4 +64,11 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types);
 void FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx);
 
+class MongoClearCacheFunction : public TableFunction {
+public:
+	MongoClearCacheFunction();
+
+	static void ClearMongoCaches(ClientContext &context);
+};
+
 } // namespace duckdb

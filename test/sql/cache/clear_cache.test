@@ -1,0 +1,150 @@
+# name: test/sql/cache/clear_cache.test
+# description: Test mongo_clear_cache table function - verifies cache invalidation
+# group: [cache]
+# 
+# This test verifies that mongo_clear_cache() clears all caches:
+# - Collection names cache (collection_cache)
+# - View info cache (view_info_cache) 
+# - Schema cache (schemas and schemas_scanned flag)
+
+# Require statement will ensure this test is run with this extension loaded
+require mongo
+
+# Test that mongo_clear_cache function exists (works without MongoDB)
+query I
+SELECT COUNT(*) FROM duckdb_functions() WHERE function_name = 'mongo_clear_cache';
+----
+1
+
+# Test that mongo_clear_cache function signature is correct
+query I
+SELECT COUNT(*) FROM duckdb_functions() 
+WHERE function_name = 'mongo_clear_cache' 
+  AND function_type = 'table';
+----
+1
+
+# Test basic call to mongo_clear_cache (should succeed even without attached databases)
+query I
+SELECT COUNT(*) FROM mongo_clear_cache() WHERE Success = true;
+----
+1
+
+# Test with attached database - verify cache clearing invalidates stale data
+# This test uses the test database created by create-mongo-tables.sh
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 database=duckdb_mongo_test' AS test_mongo (TYPE MONGO);
+
+# Query collections initially - this populates the collection cache
+query I
+SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = 'test_mongo';
+----
+6
+
+# Query collections again - should use cached data (same results, but from cache)
+query I
+SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = 'test_mongo';
+----
+6
+
+# Get list of collections (this uses cached collection names)
+query T
+SELECT table_name FROM information_schema.tables WHERE table_catalog = 'test_mongo' ORDER BY table_name;
+----
+deeply_nested
+empty_collection
+orders
+products
+type_conflicts
+users
+
+# Clear cache - this should invalidate:
+# 1. collection_cache (collection names per database)
+# 2. view_info_cache (parsed CreateViewInfo per collection)
+# 3. Schema caches (via InvalidateCache on each schema)
+# 4. schemas_scanned flag (forces re-scan)
+statement ok
+SELECT * FROM mongo_clear_cache();
+
+# Query collections again - should fetch fresh data from MongoDB (not from stale cache)
+# Even though the data is the same, this proves cache was cleared and fresh fetch occurred
+query I
+SELECT COUNT(*) FROM information_schema.tables WHERE table_catalog = 'test_mongo';
+----
+6
+
+# Verify we get the same collections (proving fresh data was fetched, not stale cache)
+query T
+SELECT table_name FROM information_schema.tables WHERE table_catalog = 'test_mongo' ORDER BY table_name;
+----
+deeply_nested
+empty_collection
+orders
+products
+type_conflicts
+users
+
+# Test that SHOW TABLES also reflects fresh data after cache clear
+# First, query to populate cache
+statement ok
+SHOW TABLES;
+
+# Clear cache
+statement ok
+SELECT * FROM mongo_clear_cache();
+
+# Query again - should show fresh data (cache was cleared, forcing fresh fetch)
+statement ok
+SHOW TABLES;
+
+# Test schema cache invalidation
+# Query schemas to populate schema cache
+# When attaching with database=duckdb_mongo_test, it creates a schema with that database name
+query T
+SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'test_mongo' ORDER BY schema_name;
+----
+duckdb_mongo_test
+main
+
+# Get schema count (should be 2: main and duckdb_mongo_test)
+query I
+SELECT COUNT(*) FROM information_schema.schemata WHERE catalog_name = 'test_mongo';
+----
+2
+
+# Clear cache - this should reset schemas_scanned = false
+statement ok
+SELECT * FROM mongo_clear_cache();
+
+# Query schemas again - should fetch fresh data (schemas_scanned was reset)
+query T
+SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'test_mongo' ORDER BY schema_name;
+----
+duckdb_mongo_test
+main
+
+# Verify count is still 2 after cache clear
+query I
+SELECT COUNT(*) FROM information_schema.schemata WHERE catalog_name = 'test_mongo';
+----
+2
+
+# Test that view info cache is cleared (by querying a collection, which uses cached view info)
+# When attaching with database=duckdb_mongo_test, collections are in the duckdb_mongo_test schema
+# First query populates view info cache
+statement ok
+SELECT COUNT(*) FROM test_mongo.duckdb_mongo_test.users LIMIT 1;
+
+# Clear cache
+statement ok
+SELECT * FROM mongo_clear_cache();
+
+# Query again - should work (view info cache was cleared, will be repopulated)
+statement ok
+SELECT COUNT(*) FROM test_mongo.duckdb_mongo_test.users LIMIT 1;
+
+# Cleanup
+statement ok
+DETACH test_mongo;

@@ -28,6 +28,7 @@ set(EXTENSION_SOURCES
     src/mongo_instance.cpp
     src/mongo_transaction.cpp
     src/mongo_transaction_manager.cpp
+    src/mongo_clear_cache.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
