@@ -6,5 +6,5 @@ duckdb_extension_load(mongo
     LOAD_TESTS
 )
 
-# Any extra extensions that should be built
-# e.g.: duckdb_extension_load(json)
+# Load TPC-H extension for benchmarking
+duckdb_extension_load(tpch)

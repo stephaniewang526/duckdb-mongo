@@ -1,6 +1,7 @@
 #include "mongo_table_function.hpp"
 #include "mongo_instance.hpp"
 #include "duckdb/common/types/timestamp.hpp"
+#include "duckdb/common/types/date.hpp"
 #include <sstream>
 
 namespace duckdb {
@@ -68,8 +69,17 @@ LogicalType InferTypeFromBSON(const bsoncxx::document::element &element) {
 		return LogicalType::DOUBLE;
 	case bsoncxx::type::k_bool:
 		return LogicalType::BOOLEAN;
-	case bsoncxx::type::k_date:
+	case bsoncxx::type::k_date: {
+		// Infer DATE if time component is 00:00:00 (midnight UTC), otherwise TIMESTAMP
+		auto date_value = element.get_date();
+		auto ms_since_epoch = date_value.to_int64();
+		auto seconds = ms_since_epoch / 1000;
+		auto time_of_day = seconds % 86400;
+		if (time_of_day == 0) {
+			return LogicalType::DATE;
+		}
 		return LogicalType::TIMESTAMP;
+	}
 	case bsoncxx::type::k_oid:
 		return LogicalType::VARCHAR; // ObjectId as string
 	case bsoncxx::type::k_binary:
@@ -108,6 +118,7 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	int varchar_count = 0;
 	int boolean_count = 0;
 	int timestamp_count = 0;
+	int date_count = 0;
 
 	for (const auto &type : types) {
 		if (type == LogicalType::DOUBLE) {
@@ -120,6 +131,8 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 			boolean_count++;
 		} else if (type == LogicalType::TIMESTAMP) {
 			timestamp_count++;
+		} else if (type == LogicalType::DATE) {
+			date_count++;
 		}
 	}
 
@@ -406,6 +419,20 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 				bool_val = element.get_bool().value;
 			}
 			FlatVector::GetData<bool>(output.data[col_idx])[row_idx] = bool_val;
+			break;
+		}
+		case LogicalTypeId::DATE: {
+			date_t date_val;
+			if (element.type() == bsoncxx::type::k_date) {
+				auto mongo_date = element.get_date();
+				auto ms_since_epoch = mongo_date.to_int64();
+				// Convert milliseconds to timestamp_t, then to date_t
+				timestamp_t ts_val = Timestamp::FromEpochMs(ms_since_epoch);
+				date_val = Timestamp::GetDate(ts_val);
+			} else {
+				date_val = date_t(0);
+			}
+			FlatVector::GetData<date_t>(output.data[col_idx])[row_idx] = date_val;
 			break;
 		}
 		case LogicalTypeId::TIMESTAMP: {

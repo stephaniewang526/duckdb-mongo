@@ -1,0 +1,43 @@
+# name: test/sql/tpch/tpch.test
+# description: Run TPC-H queries over MongoDB collections
+# group: [tpch]
+
+require tpch
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+# Attach MongoDB database with TPC-H data
+# The database should be created by scripts/create-tpch-mongo.sh
+statement ok
+ATTACH 'host=localhost port=27017 database=tpch' AS tpch_mongo (TYPE MONGO);
+
+# Set search path so PRAGMA tpch() queries can find the tables
+statement ok
+SET search_path='tpch_mongo.tpch';
+
+# Run TPC-H queries 1-9
+loop i 1 9
+
+query I
+PRAGMA tpch(${i})
+----
+<FILE>:duckdb/extension/tpch/dbgen/answers/sf0.01/q0${i}.csv
+
+endloop
+
+# Run TPC-H queries 10-22
+loop i 10 22
+
+query I
+PRAGMA tpch(${i})
+----
+<FILE>:duckdb/extension/tpch/dbgen/answers/sf0.01/q${i}.csv
+
+endloop
+
+# Cleanup - reset search path (test framework handles cleanup)
+statement ok
+SET search_path='main';
+
