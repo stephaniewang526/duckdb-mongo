@@ -18,3 +18,11 @@ host=*
 *.db
 *.duckdb
 *.duckdb.wal
+
+# Local CI testing files
+docker-compose.ci.yml
+Dockerfile.local-ci
+.actrc
+test-ci-local.sh
+scripts/ci-test.sh
+scripts/setup-vcpkg.sh

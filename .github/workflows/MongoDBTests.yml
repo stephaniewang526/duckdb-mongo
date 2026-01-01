@@ -39,6 +39,13 @@ jobs:
       run: |
         sudo apt-get update -y -qq
         sudo apt-get install -y -qq build-essential cmake ninja-build ccache python3
+        # Ensure ninja is available in the path vcpkg expects
+        which ninja || (echo "ninja not found in PATH" && find /usr -name ninja 2>/dev/null || true)
+        # Create symlink if ninja is in /usr/bin but vcpkg expects /usr/local/bin
+        if [ -f /usr/bin/ninja ] && [ ! -f /usr/local/bin/ninja ]; then
+          sudo mkdir -p /usr/local/bin
+          sudo ln -s /usr/bin/ninja /usr/local/bin/ninja
+        fi
 
     - name: Install mongosh
       run: |
@@ -77,9 +84,12 @@ jobs:
       env:
         GEN: ninja
         VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+        CMAKE_MAKE_PROGRAM: /usr/bin/ninja
       run: |
         echo "VCPKG_TOOLCHAIN_PATH=$VCPKG_TOOLCHAIN_PATH"
         echo "VCPKG_TARGET_TRIPLET=$VCPKG_TARGET_TRIPLET"
+        echo "CMAKE_MAKE_PROGRAM=$CMAKE_MAKE_PROGRAM"
+        echo "ninja location: $(which ninja)"
         # Capture more detailed error output if build fails
         make release 2>&1 | tee build.log || (echo "=== Build failed, showing last 200 lines ===" && tail -200 build.log && exit 1)
 
