@@ -142,7 +142,9 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		REQUIRE(result->RowCount() == 2);
 
 		// Find column indices
-		idx_t a_col = duckdb::DConstants::INVALID_INDEX, b_col = duckdb::DConstants::INVALID_INDEX;
+		// Use a local constant to avoid ODR issues with DConstants::INVALID_INDEX on ARM64
+		constexpr idx_t INVALID_COL = idx_t(-1);
+		idx_t a_col = INVALID_COL, b_col = INVALID_COL;
 		for (idx_t i = 0; i < result->ColumnCount(); i++) {
 			std::string col_name = result->ColumnName(i);
 			if (col_name == "a") {
@@ -151,8 +153,8 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 				b_col = i;
 			}
 		}
-		REQUIRE(a_col != duckdb::DConstants::INVALID_INDEX);
-		REQUIRE(b_col != duckdb::DConstants::INVALID_INDEX);
+		REQUIRE(a_col != INVALID_COL);
+		REQUIRE(b_col != INVALID_COL);
 
 		// Verify data values (ORDER BY a ensures a=1 comes first, then a=2)
 		auto chunk = result->Fetch();
