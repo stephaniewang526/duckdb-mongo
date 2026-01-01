@@ -89,7 +89,7 @@ The extension provides **direct SQL access to MongoDB without exporting or copyi
    │ Get collection reference                                   │
    │ Convert DuckDB WHERE filters → MongoDB $match query        │
    │   • Parse table filters from query plan                    │
-   │   • Convert to MongoDB operators ($eq, $gt, $gte, etc.)   │
+   │   • Convert to MongoDB operators ($eq, $gt, $gte, etc.)    │
    │   • Merge multiple filters on same column                  │
    │                                                            │
    │ Create MongoDB cursor:                                     │
@@ -167,21 +167,13 @@ USE mongo_db;  -- Defaults to "mydb"
 
 ## Pushdown Strategy
 
-The extension uses a selective pushdown strategy to balance performance:
+The extension uses a selective pushdown strategy that leverages MongoDB's indexing capabilities while utilizing DuckDB's analytical strengths:
 
-**Pushed Down to MongoDB:**
-- **Filters (WHERE clauses)**: Leverages MongoDB indexes, dramatically reduces data transfer
-- **LIMIT clauses**: Reduces data transfer for TOP N queries (future)
-- **Projections**: Only fetch needed columns (future)
+**Pushed Down to MongoDB:** Filters (WHERE clauses), LIMIT clauses, and projections to reduce data transfer and leverage MongoDB indexes.
 
-**Kept in DuckDB:**
-- **Aggregations**: DuckDB's GROUP BY algorithms are superior to MongoDB's `$group`
-- **Joins**: DuckDB's join algorithms outperform MongoDB's `$lookup`
-- **Complex SQL**: Window functions, CTEs, subqueries, and complex expressions
+**Kept in DuckDB:** Aggregations, joins, and complex SQL features (window functions, CTEs, subqueries) where DuckDB's query optimizer and execution engine excel.
 
-**Rationale:** Push down operations that reduce data transfer and leverage MongoDB indexes, while keeping analytical operations in DuckDB where it excels. This provides the best of both worlds: fast indexed filtering from MongoDB and superior analytical processing from DuckDB.
-
-**Performance:** Simple filtered queries are competitive (within 1.5-2x of native MongoDB), while complex analytical queries with joins and aggregations benefit from DuckDB's superior algorithms (often 2-3x faster than MongoDB aggregation pipelines).
+This hybrid approach provides fast indexed filtering from MongoDB combined with powerful analytical processing from DuckDB, optimizing performance for both simple filtered queries and complex analytical workloads.
 
 ## Building
 
