@@ -8,6 +8,9 @@
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
+#include "duckdb/execution/operator/helper/physical_limit.hpp"
+#include "duckdb/execution/operator/helper/physical_streaming_limit.hpp"
+#include "duckdb/common/enums/physical_operator_type.hpp"
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/builder/basic/array.hpp>
 #include <sstream>
@@ -756,7 +759,7 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 		return query_builder.extract();
 	}
 
-	// Group filters by column name to merge multiple filters on the same column
+	// Group filters by column name to merge multiple filters on same column
 	map<string, bsoncxx::builder::basic::document> column_filters;
 	
 	for (const auto &filter_pair : filters->filters) {
@@ -774,7 +777,7 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 			continue;
 		}
 
-		// Extract the filter for this column from the filter document
+		// Extract column filter from document
 		bsoncxx::types::bson_value::view column_filter_value;
 		bool has_column_filter = false;
 		for (auto doc_it = filter_doc.view().begin(); doc_it != filter_doc.view().end(); ++doc_it) {
@@ -786,46 +789,43 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 		}
 		
 		if (!has_column_filter) {
-			// Top-level operator like $or - add directly to query
+			// Top-level operator like $or - add directly
 			for (auto doc_it = filter_doc.view().begin(); doc_it != filter_doc.view().end(); ++doc_it) {
 				query_builder.append(bsoncxx::builder::basic::kvp(doc_it->key(), doc_it->get_value()));
 			}
 			continue;
 		}
 
-		// Check if we already have filters for this column
+		// Merge filters for same column
 		auto it = column_filters.find(column_name);
 		if (it == column_filters.end()) {
-			// First filter for this column
 			bsoncxx::builder::basic::document col_doc;
 			if (column_filter_value.type() == bsoncxx::type::k_document) {
-				// Has operators like {$gte: X, $lt: Y} - copy all operators
+				// Copy operators
 				for (auto nested_it = column_filter_value.get_document().value.begin();
 				     nested_it != column_filter_value.get_document().value.end(); ++nested_it) {
 					col_doc.append(bsoncxx::builder::basic::kvp(nested_it->key(), nested_it->get_value()));
 				}
 			} else {
-				// Simple value match (equality) - store as direct value for now
-				// We'll convert to $eq only if we need to merge with operators later
+				// Equality - use $eq
 				col_doc.append(bsoncxx::builder::basic::kvp("$eq", column_filter_value));
 			}
 			column_filters[column_name] = std::move(col_doc);
 		} else {
-			// Merge additional filters for this column
 			if (column_filter_value.type() == bsoncxx::type::k_document) {
-				// Merge operators into existing column filter
+				// Merge operators
 				for (auto nested_it = column_filter_value.get_document().value.begin();
 				     nested_it != column_filter_value.get_document().value.end(); ++nested_it) {
 					it->second.append(bsoncxx::builder::basic::kvp(nested_it->key(), nested_it->get_value()));
 				}
 			} else {
-				// Simple value - add as $eq (we already have a document structure)
+				// Add as $eq
 				it->second.append(bsoncxx::builder::basic::kvp("$eq", column_filter_value));
 			}
 		}
 	}
 
-	// Add all column filters to query
+	// Add column filters to query
 	for (auto &col_filter_pair : column_filters) {
 		query_builder.append(bsoncxx::builder::basic::kvp(col_filter_pair.first, col_filter_pair.second.extract()));
 	}
@@ -864,10 +864,29 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Build MongoDB find options
 	mongocxx::options::find opts;
 	
-	// TODO: LIMIT pushdown
-	// LIMIT pushdown would require checking the query plan for a PhysicalLimit operator
-	// and extracting the limit value. This would require traversing the operator tree
-	// from input.op. For now, LIMIT is handled by DuckDB after the scan.
+	// LIMIT pushdown: Push constant LIMIT values to MongoDB
+	// Only works when LIMIT is directly above table scan (simple queries, not Q3/Q10 with joins)
+	if (input.op) {
+		if (input.op->type == PhysicalOperatorType::LIMIT) {
+			const auto &limit_op = input.op->Cast<PhysicalLimit>();
+			if (limit_op.limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
+				idx_t limit_value = limit_op.limit_val.GetConstantValue();
+				if (limit_value > 0 && limit_value < PhysicalLimit::MAX_LIMIT_VALUE) {
+					opts.limit(limit_value);
+					result->limit = limit_value;
+				}
+			}
+		} else if (input.op->type == PhysicalOperatorType::STREAMING_LIMIT) {
+			const auto &streaming_limit_op = input.op->Cast<PhysicalStreamingLimit>();
+			if (streaming_limit_op.limit_val.Type() == LimitNodeType::CONSTANT_VALUE) {
+				idx_t limit_value = streaming_limit_op.limit_val.GetConstantValue();
+				if (limit_value > 0 && limit_value < PhysicalLimit::MAX_LIMIT_VALUE) {
+					opts.limit(limit_value);
+					result->limit = limit_value;
+				}
+			}
+		}
+	}
 	
 	// Create cursor
 	result->cursor = make_uniq<mongocxx::cursor>(collection.find(query_filter, opts));
