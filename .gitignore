@@ -7,6 +7,9 @@ vcpkg_installed/
 .DS_Store
 testext
 test/python/__pycache__/
+__pycache__/
+*.pyc
+*.pyo
 .Rhistory
 *.code-workspace
 .clang-tidy
