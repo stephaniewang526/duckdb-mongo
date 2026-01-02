@@ -4,8 +4,10 @@
 #include "mongo_storage_extension.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_table_function.hpp"
+#include "mongo_secrets.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
+#include "duckdb/main/secret/secret.hpp"
 
 namespace duckdb {
 
@@ -34,6 +36,18 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register MongoDB clear cache function
 	MongoClearCacheFunction clear_cache_func;
 	loader.RegisterFunction(clear_cache_func);
+
+	// Register MongoDB secret type
+	SecretType secret_type;
+	secret_type.name = "mongo";
+	secret_type.deserializer = KeyValueSecret::Deserialize<KeyValueSecret>;
+	secret_type.default_provider = "config";
+
+	loader.RegisterSecretType(secret_type);
+
+	CreateSecretFunction mongo_secret_function = {"mongo", "config", CreateMongoSecretFunction};
+	SetMongoSecretParameters(mongo_secret_function);
+	loader.RegisterFunction(mongo_secret_function);
 
 	// Register MongoDB storage extension for ATTACH support
 	auto &db = loader.GetDatabaseInstance();

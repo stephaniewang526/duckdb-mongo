@@ -1,6 +1,7 @@
 #include "mongo_catalog.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_schema_entry.hpp"
+#include "mongo_secrets.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
@@ -498,6 +499,27 @@ void MongoCatalog::ClearCache() {
 		}
 		schemas_scanned = false;
 	}
+}
+
+string MongoCatalog::GetConnectionString(ClientContext &context, const string &attach_path, string secret_name) {
+	// if no secret is specified we default to the unnamed mongo secret, if it exists
+	string connection_string = attach_path;
+	bool explicit_secret = !secret_name.empty();
+	if (!explicit_secret) {
+		// look up settings from the default unnamed mongo secret if none is provided
+		secret_name = "__default_mongo";
+	}
+
+	auto secret_entry = GetMongoSecret(context, secret_name);
+	if (secret_entry) {
+		// secret found - build connection string from secret
+		const auto &kv_secret = dynamic_cast<const KeyValueSecret &>(*secret_entry->secret);
+		connection_string = BuildMongoConnectionString(kv_secret, attach_path);
+	} else if (explicit_secret) {
+		// secret not found and one was explicitly provided - throw an error
+		throw BinderException("Secret with name \"%s\" not found", secret_name);
+	}
+	return connection_string;
 }
 
 } // namespace duckdb

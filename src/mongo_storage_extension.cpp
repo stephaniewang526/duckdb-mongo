@@ -2,14 +2,28 @@
 #include "duckdb/storage/storage_extension.hpp"
 #include "mongo_catalog.hpp"
 #include "mongo_transaction_manager.hpp"
+#include "duckdb/parser/parsed_data/attach_info.hpp"
+#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
 unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storage_info, ClientContext &context,
                                        AttachedDatabase &db, const string &name, AttachInfo &info,
                                        AttachOptions &attach_options) {
-	// Parse connection string from info.path
-	string connection_string = info.path;
+	// Extract secret option from attach_options
+	string secret_name;
+	for (auto &entry : attach_options.options) {
+		auto lower_name = StringUtil::Lower(entry.first);
+		if (lower_name == "secret") {
+			secret_name = entry.second.ToString();
+		} else {
+			throw BinderException("Unrecognized option for Mongo attach: %s", entry.first);
+		}
+	}
+
+	// Get connection string (with secret support)
+	string attach_path = info.path;
+	string connection_string = MongoCatalog::GetConnectionString(context, attach_path, secret_name);
 	string database_name = ""; // Specific database to use (empty means all databases)
 
 	// If the path doesn't start with "mongodb://", it's likely a key=value format

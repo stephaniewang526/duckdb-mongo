@@ -93,6 +93,9 @@ public:
 		return mongocxx::client(mongocxx::uri(connection_string));
 	}
 
+	// Get connection string with secret support
+	static string GetConnectionString(ClientContext &context, const string &attach_path, string secret_name);
+
 	// Get cached collection names for a database (shared across schemas)
 	vector<string> GetCachedCollectionNames(const string &db_name) const;
 	// Cache collection names for a database

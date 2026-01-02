@@ -32,12 +32,20 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	db.LoadStaticExtension<duckdb::MongoExtension>();
 	duckdb::Connection con(db);
 
-	SECTION("ATTACH to MongoDB Atlas") {
+	// Create a secret for MongoDB Atlas connection (without database name)
+	std::string create_secret_query =
+	    "CREATE SECRET atlas_secret (TYPE mongo, HOST 'adl-testing-azure-amste.ki9ie.mongodb.net', "
+	    "USER '" +
+	    std::string(username) + "', PASSWORD '" + std::string(password) + "', SRV 'true')";
+	REQUIRE_NO_FAIL(con.Query(create_secret_query));
+
+	SECTION("ATTACH to MongoDB Atlas using secret with empty path") {
 		auto start = std::chrono::high_resolution_clock::now();
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		// Empty string means use secret only - all connection info comes from secret
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-		std::cerr << "[TEST] ATTACH took " << duration << "ms" << std::endl;
+		std::cerr << "[TEST] ATTACH with secret (empty path) took " << duration << "ms" << std::endl;
 
 		// Verify attachment
 		auto result = con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db'");
@@ -45,8 +53,41 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		REQUIRE(result->RowCount() == 1);
 	}
 
+	SECTION("ATTACH to MongoDB Atlas using secret with additional options") {
+		auto start = std::chrono::high_resolution_clock::now();
+		// Can provide additional connection options in attach path that merge with secret
+		// For example, adding query parameters like readPreference
+		REQUIRE_NO_FAIL(
+		    con.Query("ATTACH '?readPreference=secondary' AS atlas_db_options (TYPE MONGO, SECRET 'atlas_secret')"));
+		auto end = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+		std::cerr << "[TEST] ATTACH with secret and additional options took " << duration << "ms" << std::endl;
+
+		// Verify attachment
+		auto result =
+		    con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_options'");
+		REQUIRE(!result->HasError());
+		REQUIRE(result->RowCount() == 1);
+
+		// Cleanup
+		REQUIRE_NO_FAIL(con.Query("DETACH atlas_db_options"));
+	}
+
+	SECTION("ATTACH to MongoDB Atlas using connection string") {
+		auto start = std::chrono::high_resolution_clock::now();
+		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db_legacy (TYPE MONGO)"));
+		auto end = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+		std::cerr << "[TEST] ATTACH with connection string took " << duration << "ms" << std::endl;
+
+		// Verify attachment
+		auto result = con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_legacy'");
+		REQUIRE(!result->HasError());
+		REQUIRE(result->RowCount() == 1);
+	}
+
 	SECTION("Verify expected schemas are present") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
 		auto start = std::chrono::high_resolution_clock::now();
 		auto result = con.Query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' "
@@ -67,7 +108,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("USE command with default schema") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
 		// USE command should default to "main" schema
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db"));
@@ -98,7 +139,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("USE command with explicit schema and verify context") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
 		auto result = con.Query("SELECT current_database(), current_schema()");
@@ -110,7 +151,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("SHOW TABLES - verify test collection exists") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
 
 		auto start = std::chrono::high_resolution_clock::now();
@@ -126,7 +167,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("Query and verify data in test collection") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
 
 		// Expected: 2 documents with a=1, b="smoke" and a=2, b="test"
@@ -169,7 +210,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("Query information_schema for tables in oa_smoke_test") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
 		auto start = std::chrono::high_resolution_clock::now();
 		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
@@ -186,7 +227,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("Query a collection from oa_smoke_test schema") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
 		auto start = std::chrono::high_resolution_clock::now();
 		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
@@ -229,7 +270,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	}
 
 	SECTION("Cleanup: DETACH") {
-		REQUIRE_NO_FAIL(con.Query("ATTACH '" + connection_string + "' AS atlas_db (TYPE MONGO)"));
+		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
 		duckdb::Connection cleanup_con(db);
 		auto detach_result = cleanup_con.Query("DETACH atlas_db");
@@ -240,4 +281,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 			REQUIRE(chunk->GetValue(0, 0).GetValue<int64_t>() == 0);
 		}
 	}
+
+	// Cleanup: Drop the secret
+	REQUIRE_NO_FAIL(con.Query("DROP SECRET IF EXISTS atlas_secret"));
 }
