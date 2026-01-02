@@ -50,7 +50,7 @@ struct MongoScanState : public LocalTableFunctionState {
 	unique_ptr<mongocxx::cursor::iterator> end;
 	bool finished = false;
 
-	MongoScanState() : finished(false), limit(-1) {
+	MongoScanState() : limit(-1), finished(false) {
 	}
 };
 

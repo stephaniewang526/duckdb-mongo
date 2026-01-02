@@ -131,7 +131,6 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	int varchar_count = 0;
 	int boolean_count = 0;
 	int timestamp_count = 0;
-	int date_count = 0;
 
 	for (const auto &type : types) {
 		if (type == LogicalType::DOUBLE) {
@@ -144,8 +143,6 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 			boolean_count++;
 		} else if (type == LogicalType::TIMESTAMP) {
 			timestamp_count++;
-		} else if (type == LogicalType::DATE) {
-			date_count++;
 		}
 	}
 
