@@ -21,20 +21,21 @@ int main(int argc, char *argv[]) {
 TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	const char *username = std::getenv("MONGO_ATLAS_USERNAME");
 	const char *password = std::getenv("MONGO_ATLAS_PASSWORD");
-	if (!username || !password) {
+	const char *hostname = std::getenv("MONGO_ATLAS_HOSTNAME");
+	if (!username || !password || !hostname) {
 		return; // Skip test if credentials not provided
 	}
 
 	std::string connection_string = "mongodb+srv://" + std::string(username) + ":" + std::string(password) +
-	                                "@adl-testing-azure-amste.ki9ie.mongodb.net?retryWrites=true&w=majority";
+	                                "@" + std::string(hostname) + "?retryWrites=true&w=majority";
 
 	duckdb::DuckDB db(nullptr);
 	db.LoadStaticExtension<duckdb::MongoExtension>();
 	duckdb::Connection con(db);
 
-	// Create a secret for MongoDB Atlas connection (without database name)
+	// Create or replace a temporary secret for MongoDB Atlas connection (without database name)
 	std::string create_secret_query =
-	    "CREATE SECRET atlas_secret (TYPE mongo, HOST 'adl-testing-azure-amste.ki9ie.mongodb.net', "
+	    "CREATE OR REPLACE SECRET atlas_secret (TYPE mongo, HOST '" + std::string(hostname) + "', "
 	    "USER '" +
 	    std::string(username) + "', PASSWORD '" + std::string(password) + "', SRV 'true')";
 	REQUIRE_NO_FAIL(con.Query(create_secret_query));
@@ -53,7 +54,41 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		REQUIRE(result->RowCount() == 1);
 	}
 
-	SECTION("ATTACH to MongoDB Atlas using secret with additional options") {
+	SECTION("ATTACH to MongoDB Atlas using secret with dbname parameter") {
+		auto start = std::chrono::high_resolution_clock::now();
+		// Can provide dbname in attach path that merges with secret
+		// This tests that options in ATTACH path properly merge with secret values
+		REQUIRE_NO_FAIL(
+		    con.Query("ATTACH 'dbname=smoketests' AS atlas_db_with_dbname (TYPE MONGO, SECRET 'atlas_secret')"));
+		auto end = std::chrono::high_resolution_clock::now();
+		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+		std::cerr << "[TEST] ATTACH with secret and dbname parameter took " << duration << "ms" << std::endl;
+
+		// Verify attachment
+		auto result =
+		    con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_with_dbname'");
+		REQUIRE(!result->HasError());
+		REQUIRE(result->RowCount() == 1);
+
+		// Verify that the specified database name (smoketests) is available as a schema
+		auto schema_result =
+		    con.Query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db_with_dbname' "
+		              "AND schema_name = 'smoketests'");
+		REQUIRE(!schema_result->HasError());
+		REQUIRE(schema_result->RowCount() == 1);
+
+		// Verify that we can query collections from the specified database
+		auto tables_result =
+		    con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db_with_dbname' "
+		              "AND table_schema = 'smoketests'");
+		REQUIRE(!tables_result->HasError());
+		REQUIRE(tables_result->RowCount() >= 1); // Should have at least the "test" collection
+
+		// Cleanup
+		REQUIRE_NO_FAIL(con.Query("DETACH atlas_db_with_dbname"));
+	}
+
+	SECTION("ATTACH to MongoDB Atlas using secret with additional query options") {
 		auto start = std::chrono::high_resolution_clock::now();
 		// Can provide additional connection options in attach path that merge with secret
 		// For example, adding query parameters like readPreference
@@ -61,7 +96,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		    con.Query("ATTACH '?readPreference=secondary' AS atlas_db_options (TYPE MONGO, SECRET 'atlas_secret')"));
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-		std::cerr << "[TEST] ATTACH with secret and additional options took " << duration << "ms" << std::endl;
+		std::cerr << "[TEST] ATTACH with secret and additional query options took " << duration << "ms" << std::endl;
 
 		// Verify attachment
 		auto result =
