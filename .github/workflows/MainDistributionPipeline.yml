@@ -21,6 +21,7 @@ jobs:
       duckdb_version: v1.4.1
       ci_tools_version: main
       extension_name: mongo
+      exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;"
       # Use vcpkg commit with mongo-c-driver 1.30.3 which includes the CMP0042 fix.
       # The default commit (ce613c41372b23b1f51333815feb3edd87ef8a8b) has mongo-c-driver 1.30.2
       # which fails on macOS with CMake 4.0+ due to deprecated cmake_policy(SET CMP0042 OLD).
