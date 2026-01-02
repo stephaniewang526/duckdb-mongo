@@ -1,7 +1,7 @@
 # Testing this extension
-This directory contains all the tests for this extension. The `sql` directory holds tests that are written as [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.html). DuckDB aims to have most its tests in this format as SQL statements, so for the mongo extension, this should probably be the goal too.
+This directory contains all tests for this extension. Write tests in the `sql` directory using [SQLLogicTests](https://duckdb.org/dev/sqllogictest/intro.html) format. Prefer SQL-based tests over C++ tests when possible.
 
-The root makefile contains targets to build and run all of these tests. To run the SQLLogicTests:
+The root Makefile contains targets to build and run all tests. To run SQLLogicTests:
 ```bash
 make test
 ```
@@ -12,7 +12,7 @@ make test_debug
 
 ## Setting Up Test MongoDB Database
 
-Many tests require a MongoDB instance with test data. The `make test` command automatically sets `MONGODB_TEST_DATABASE_AVAILABLE=1`, but you still need MongoDB running and test data created.
+Many tests require a MongoDB instance with test data. The `make test` command automatically sets `MONGODB_TEST_DATABASE_AVAILABLE=1`, but MongoDB must be running with test data created.
 
 ### Automated Setup (Recommended)
 
@@ -54,18 +54,9 @@ If you want to run `make test` directly, you need to:
 
 The setup script creates two databases:
 
-1. **`duckdb_mongo_test`** - General test database with the following collections:
-   - `users` - Sample user data with various types (strings, numbers, booleans, dates, nested objects, arrays)
-   - `products` - Product data with nested specs
-   - `orders` - Order data with nested arrays
-   - `empty_collection` - Empty collection for edge case testing
-   - `type_conflicts` - Collection with type conflicts
-   - `deeply_nested` - Collection with deeply nested documents
+1. **`duckdb_mongo_test`** - General test database with collections: `users`, `products`, `orders`, `empty_collection`, `type_conflicts`, `deeply_nested`
 
-2. **`tpch_test`** - TPC-H test database (always scale factor 0.01) for unit tests:
-   - Contains all 8 TPC-H tables (region, nation, supplier, customer, part, partsupp, orders, lineitem)
-   - Always uses scale factor 0.01 (~60K lineitems) to match expected test results
-   - Separate from `tpch` database used for benchmarks (which can be any scale factor)
+2. **`tpch_test`** - TPC-H test database (scale factor 0.01) with all 8 TPC-H tables. Separate from the `tpch` database used for benchmarks.
 
 Tests that require MongoDB use `require-env MONGODB_TEST_DATABASE_AVAILABLE` and will be skipped if the environment variable is not set.
 
@@ -73,16 +64,8 @@ Tests that require MongoDB use `require-env MONGODB_TEST_DATABASE_AVAILABLE` and
 
 Tests run from `duckdb_unittest_tempdir/` to contain test database files created by `ATTACH` commands. These files are automatically ignored by git (see `.gitignore`). 
 
-The automated test script (`test/run-tests-with-mongo.sh`) automatically cleans up these files after running tests. You can also clean them manually:
+The automated test script (`test/run-tests-with-mongo.sh`) automatically cleans up these files after running tests. To clean them manually, remove the `duckdb_unittest_tempdir/` directory.
 
-```bash
-make cleanup-test-files
-```
-
-Or directly:
-```bash
-bash scripts/cleanup_test_files.sh
-```
 ## C++ Integration Tests
 
 In addition to SQL logic tests, this extension includes C++ integration tests for testing connectivity to real MongoDB instances. These tests verify that the extension works correctly with actual MongoDB deployments.
@@ -91,17 +74,17 @@ In addition to SQL logic tests, this extension includes C++ integration tests fo
 
 ### Building Integration Tests
 
-Integration tests require C++ unit tests to be enabled. The extension Makefile hardcodes `ENABLE_UNITTEST_CPP_TESTS=FALSE`, so you need to use CMake directly:
+Build integration tests using CMake:
 
 ```bash
 mkdir -p build/release
 cd build/release
-cmake -DENABLE_UNITTEST_CPP_TESTS=TRUE -GNinja ../..
-ninja
+cmake -GNinja ../..
+ninja test_atlas_integration
 cd ../..
 ```
 
-This will build all integration test executables in `build/release/extension/mongo/`.
+This builds the integration test executable in `build/release/extension/mongo/`. Note: `test_atlas_integration` is always built regardless of `ENABLE_UNITTEST_CPP_TESTS`.
 
 ### Running Integration Tests
 
@@ -126,9 +109,9 @@ To add a new C++ integration test:
 
 2. **Use the Catch2 test framework** (same as DuckDB core tests) with appropriate test tags
 
-3. **Add the test executable to CMakeLists.txt** if needed. Look for existing test executables in `CMakeLists.txt` and follow the same pattern.
+3. **Add the test executable to the root `CMakeLists.txt`**. Look for `test_atlas_integration` as an example and follow the same pattern.
 
-4. **Rebuild** the project with `ENABLE_UNITTEST_CPP_TESTS=TRUE` enabled
+4. **Rebuild** the project using the build instructions above
 
 Example test structure:
 ```cpp
@@ -157,4 +140,4 @@ TEST_CASE("My Integration Test", "[mongo][integration]") {
 }
 ```
 
-**Test tags**: Use tags like `[mongo][integration]` or `[mongo][atlas][integration]` to allow filtering when running tests. Tests that require specific credentials should check for environment variables and skip gracefully if they're not available.
+**Test tags**: Use tags like `[mongo][integration]` or `[mongo][atlas][integration]` to allow filtering. Tests requiring credentials should check for environment variables and skip gracefully if unavailable.
