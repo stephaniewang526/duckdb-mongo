@@ -226,8 +226,6 @@ SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'mongo_
 ├───────────────────┤
 │ duckdb_mongo_test │
 │ main              │
-│ tpch              │
-│ tpch_test         │
 └───────────────────┘
 
 -- Select data from a specific collection
@@ -238,19 +236,57 @@ SELECT order_id, status, total FROM mongo_db.duckdb_mongo_test.orders;
 ├──────────┼───────────┼─────────┤
 │ ORD-001  │ completed │ 1059.97 │
 │ ORD-002  │ pending   │  299.99 │
+│ ORD-003  │ cancelled │     0.0 │
+│ ORD-004  │ pending   │   79.99 │
 └──────────┴───────────┴─────────┘
+
+-- Query arrays of objects using list_extract (1-based indexing)
+SELECT order_id, list_extract(items, 1).product AS product, list_extract(items, 1).price AS price FROM mongo_db.duckdb_mongo_test.orders;
+┌──────────┬──────────┬────────┐
+│ order_id │ product  │ price  │
+│ varchar  │ varchar  │ double │
+├──────────┼──────────┼────────┤
+│ ORD-001  │ Laptop   │ 999.99 │
+│ ORD-002  │ Desk     │ 299.99 │
+│ ORD-003  │ NULL     │   NULL │
+│ ORD-004  │ Keyboard │   NULL │
+└──────────┴──────────┴────────┘
+
+-- Expand arrays into multiple rows using UNNEST
+SELECT order_id, UNNEST(items).product AS product, UNNEST(items).price AS price 
+FROM mongo_db.duckdb_mongo_test.orders 
+WHERE order_id = 'ORD-001';
+┌──────────┬──────────┬─────────┐
+│ order_id │ product  │  price  │
+│ varchar  │ varchar  │ double  │
+├──────────┼──────────┼─────────┤
+│ ORD-001  │ Laptop   │  999.99 │
+│ ORD-001  │ Mouse    │   29.99 │
+└──────────┴──────────┴─────────┘
 
 -- Query with aggregation
 SELECT status, COUNT(*) as count, SUM(total) as total_revenue 
-FROM mongo_db.duckdb_mongo_test.orders 
-GROUP BY status;
+  FROM mongo_db.duckdb_mongo_test.orders 
+  GROUP BY status
+  ORDER BY status;
 ┌───────────┬───────┬───────────────┐
 │  status   │ count │ total_revenue │
 │  varchar  │ int64 │    double     │
 ├───────────┼───────┼───────────────┤
-│ pending   │     1 │        299.99 │
+│ cancelled │     1 │           0.0 │
 │ completed │     1 │       1059.97 │
+│ pending   │     2 │        379.98 │
 └───────────┴───────┴───────────────┘
+
+-- Filter on array element fields using UNNEST
+SELECT DISTINCT order_id FROM mongo_db.duckdb_mongo_test.orders, UNNEST(items) AS unnest 
+WHERE unnest.product = 'Mouse';
+┌──────────┐
+│ order_id │
+│ varchar  │
+├──────────┤
+│ ORD-001  │
+└──────────┘
 ```
 
 ### Using mongo_scan Directly
@@ -276,7 +312,7 @@ SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
 | `Date` | `TIMESTAMP` / `DATE` | `DATE` if time component is midnight UTC, else `TIMESTAMP` |
 | `ObjectId` | `VARCHAR` | |
 | `Binary` | `BLOB` | |
-| `Array` | `VARCHAR` | Stored as JSON string |
+| `Array` | `LIST` or `VARCHAR` | `LIST(STRUCT(...))` for arrays of objects, `LIST(primitive)` for arrays of primitives, `LIST(LIST(...))` for arrays of arrays (including `LIST(LIST(STRUCT(...)))` for arrays of arrays of objects) (see [Array Handling](#array-handling) below) |
 | `Document` | `VARCHAR` | Stored as JSON string |
 | Other | `VARCHAR` | Default for unknown types |
 
@@ -288,11 +324,67 @@ The extension automatically infers schemas by sampling documents (default: 100, 
 - **Type Conflicts**: Frequency-based resolution (VARCHAR if >70%, numeric if ≥30%, defaults to VARCHAR)
 - **Missing Fields**: NULL values
 
+#### Array Handling
+
+**Arrays of Objects:**
+- Arrays of objects are stored as DuckDB `LIST(STRUCT(...))` types
+- **Schema Inference**: Scans up to **10 elements** per array to discover all field names across array elements
+  - This ensures fields that only exist in later elements are still discovered
+  - Example: If `items[0]` has `{product, quantity}` and `items[5]` has `{product, quantity, discount}`, the `discount` field will be included in the STRUCT
+  - Creates a LIST type containing a STRUCT with all discovered fields
+  
+- **Querying Arrays:**
+  ```sql
+  -- Return full array
+  SELECT order_id, items FROM orders WHERE order_id = 'ORD-001';
+  -- Returns: [{'product': 'Laptop', 'quantity': 1, 'price': 999.99}, {'product': 'Mouse', 'quantity': 2, 'price': 29.99}]
+  
+  -- Access specific array element using list_extract (1-based indexing)
+  SELECT order_id, list_extract(items, 1).product AS product, list_extract(items, 1).price AS price FROM orders;
+  -- Returns: 'Laptop', 999.99 (from first element)
+  
+  SELECT order_id, list_extract(items, 2).product AS product, list_extract(items, 2).price AS price FROM orders;
+  -- Returns: 'Mouse', 29.99 (from second element)
+  
+  -- Expand array into multiple rows using UNNEST
+  SELECT order_id, UNNEST(items).product AS product, UNNEST(items).price AS price FROM orders;
+  -- Returns multiple rows, one per array element
+  ```
+  
+  **Note:** For filtering on array elements, see the [Pushdown Strategy](#pushdown-strategy) section.
+
+**Arrays of Primitives:**
+- Arrays of primitives (strings, numbers) are stored as `LIST` types
+- Example: `tags: ['admin', 'user']` → `LIST(VARCHAR)` containing `['admin', 'user']`
+- Can be queried with list_extract (1-based indexing): `list_extract(tags, 1)` returns `'admin'`
+- Can be expanded with UNNEST: `SELECT UNNEST(tags) FROM users`
+
+**Arrays of Arrays:**
+- Arrays of arrays are stored as `LIST(LIST(...))` types
+- Supports nested arrays of any depth (up to 5 levels)
+- Example: `matrix: [[1,2], [3,4]]` → `LIST(LIST(BIGINT))` containing `[[1,2],[3,4]]`
+- Example: `data: [[[1,2], [3,4]], [[5,6], [7,8]]]` → `LIST(LIST(LIST(BIGINT)))` for 3D arrays
+- Arrays of arrays of objects: `data: [[{x: 1}, {x: 2}], [{x: 3}, {x: 4}]]` → `LIST(LIST(STRUCT(...)))`
+- Can be queried with nested list_extract (1-based indexing):
+  - For 2D arrays: `list_extract(list_extract(matrix, 1), 2)` returns `2` (second element of first row)
+  - For 3D arrays: `list_extract(list_extract(list_extract(data, 1), 1), 2)` returns `2` (second element of first row of first layer)
+
+**Mixed Array Depths:**
+- When documents in a collection have arrays of different depths, the schema inference uses the **deepest depth** found across all sampled documents
+- Documents with shallower arrays are automatically **wrapped** to match the expected depth, allowing all arrays to be returned as DuckDB LIST types
+- Example: If one document has `data: [[[1,2], [3,4]]]` (3D) and another has `data: [[1,2], [3,4]]` (2D), the schema infers `LIST(LIST(LIST(BIGINT)))` (3D)
+  - The 2D array `[[1,2], [3,4]]` is automatically wrapped to `[[[1,2]], [[3,4]]]` to match the 3D schema
+  - Both documents return valid LIST values that can be queried using DuckDB's LIST functions
+- This ensures data is preserved and queryable even when array structures vary across documents
+
 ### Limitations
 
 - Read-only
 - Schema inferred from sample (may miss fields)
 - Schema re-inferred per query
+- **Nested documents in arrays**: Nested documents within array elements are stored as VARCHAR (JSON strings) rather than nested STRUCT types
+  - Example: `items: [{product: 'Laptop', specs: {cpu: 'Intel', ram: '16GB'}}]` → `specs` field is VARCHAR, not STRUCT
+  - This is a simplification to avoid complex nested STRUCT handling
 
 ## Advanced Topics
 
@@ -417,11 +509,80 @@ The extension provides **direct SQL access to MongoDB without exporting or copyi
 
 The extension uses a selective pushdown strategy that leverages MongoDB's indexing capabilities while utilizing DuckDB's analytical strengths:
 
-**Pushed Down to MongoDB:** Filters (WHERE clauses), LIMIT clauses, and projections to reduce data transfer and leverage MongoDB indexes.
+**Pushed Down to MongoDB:** Filters (WHERE clauses) and LIMIT clauses to reduce data transfer and leverage MongoDB indexes.
 
 **Kept in DuckDB:** Aggregations, joins, and complex SQL features (window functions, CTEs, subqueries) where DuckDB's query optimizer and execution engine excel.
 
 This hybrid approach provides fast indexed filtering from MongoDB combined with powerful analytical processing from DuckDB, optimizing performance for both simple filtered queries and complex analytical workloads.
+
+#### Filter Pushdown
+
+WHERE clauses are automatically converted to MongoDB `$match` queries, allowing MongoDB to leverage indexes for efficient filtering.
+
+**Supported Filter Operations:**
+
+- **Comparison operators**: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- **IN clauses**: `WHERE status IN ('active', 'pending')` → `{status: {$in: ['active', 'pending']}}`
+- **NULL checks**: `IS NULL` and `IS NOT NULL`
+- **Multiple conditions**: AND/OR combinations are merged into efficient MongoDB queries
+- **Nested fields**: Filters on flattened nested fields (e.g., `address_city`) are converted to dot notation
+
+**Array Filtering:**
+
+DuckDB doesn't support direct field access on LIST types (e.g., `items.product`). To filter on array elements, use `UNNEST` to expand the array first:
+
+```sql
+-- Filter on array element fields using UNNEST
+SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest WHERE unnest.product = 'Mouse';
+
+-- Multiple conditions on same array element
+SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest 
+WHERE unnest.product = 'Laptop' AND unnest.quantity = 1;
+
+-- Comparison operators on arrays
+SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest WHERE unnest.quantity > 2;
+```
+
+**Note:** The `DISTINCT` keyword is used to avoid duplicate `order_id` values when multiple array elements match the filter condition.
+
+**Filter Examples:**
+
+```sql
+-- Simple equality filter
+SELECT * FROM users WHERE active = true;
+-- MongoDB query: {active: true}
+
+-- Range filter
+SELECT * FROM users WHERE age > 28 AND age < 40;
+-- MongoDB query: {age: {$gt: 28, $lt: 40}}
+
+-- IN filter
+SELECT * FROM users WHERE status IN ('active', 'pending');
+-- MongoDB query: {status: {$in: ['active', 'pending']}}
+
+-- NULL check
+SELECT * FROM users WHERE email IS NOT NULL;
+-- MongoDB query: {email: {$ne: null}}
+
+-- Nested field filter
+SELECT * FROM users WHERE address_city = 'New York';
+-- MongoDB query: {'address.city': 'New York'}
+```
+
+#### LIMIT Pushdown
+
+Constant LIMIT values are pushed down to MongoDB's `limit()` option, reducing data transfer for TOP N queries:
+
+```sql
+SELECT * FROM orders ORDER BY total DESC LIMIT 10;
+-- MongoDB query uses: .limit(10)
+```
+
+**Limitation:** LIMIT pushdown only works when LIMIT is directly above the table scan. For queries with joins or aggregations before LIMIT, the limit is applied in DuckDB after processing.
+
+#### Projection Pushdown
+
+Projection pushdown (fetching only selected columns) is not yet implemented. All columns are currently fetched from MongoDB, though this is planned for future optimization.
 
 ## Contributing
 

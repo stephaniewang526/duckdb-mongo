@@ -22,12 +22,9 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	const char *username = std::getenv("MONGO_ATLAS_USERNAME");
 	const char *password = std::getenv("MONGO_ATLAS_PASSWORD");
 	const char *hostname = std::getenv("MONGO_ATLAS_HOSTNAME");
-	if (!username || !password) {
+	if (!username || !password || !hostname) {
 		return; // Skip test if credentials not provided
 	}
-	// Hostname defaults to a specific test cluster if not provided
-	// Note: Test checks for hardcoded schemas/collections specific to this cluster
-	std::string hostname_str = hostname ? std::string(hostname) : "adl-testing-azure-amste.ki9ie.mongodb.net";
 
 	std::string connection_string = "mongodb+srv://" + std::string(username) + ":" + std::string(password) + "@" +
 	                                std::string(hostname) + "?retryWrites=true&w=majority";
@@ -320,7 +317,4 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 			REQUIRE(chunk->GetValue(0, 0).GetValue<int64_t>() == 0);
 		}
 	}
-
-	// Cleanup: Drop the secret
-	REQUIRE_NO_FAIL(con.Query("DROP SECRET IF EXISTS atlas_secret"));
 }

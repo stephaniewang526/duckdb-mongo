@@ -3,6 +3,7 @@
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
+#include "duckdb/common/types.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <sstream>
 #include <cctype>
+#include <iostream>
+#include <map>
 
 namespace duckdb {
 
@@ -72,7 +75,9 @@ static std::string NormalizeJson(const std::string &json) {
 	return normalized;
 }
 
-LogicalType InferTypeFromBSON(const bsoncxx::document::element &element) {
+// Helper to infer type from BSON element (works with both document::element and array::element)
+template <typename ElementType>
+LogicalType InferTypeFromBSONElement(const ElementType &element) {
 	switch (element.type()) {
 	case bsoncxx::type::k_string:
 		return LogicalType::VARCHAR;
@@ -107,6 +112,11 @@ LogicalType InferTypeFromBSON(const bsoncxx::document::element &element) {
 	}
 }
 
+// Wrapper for document::element (backward compatibility)
+LogicalType InferTypeFromBSON(const bsoncxx::document::element &element) {
+	return InferTypeFromBSONElement(element);
+}
+
 LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	if (types.empty()) {
 		return LogicalType::VARCHAR;
@@ -122,6 +132,51 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	}
 	if (all_same) {
 		return types[0];
+	}
+
+	int list_count = 0;
+	int struct_count = 0;
+	for (const auto &type : types) {
+		if (type.id() == LogicalTypeId::LIST) {
+			list_count++;
+		} else if (type.id() == LogicalTypeId::STRUCT) {
+			struct_count++;
+		}
+	}
+
+	if (list_count > 0) {
+		LogicalType deepest_list_type;
+		int max_depth = 0;
+		for (const auto &type : types) {
+			if (type.id() == LogicalTypeId::LIST) {
+				int depth = 0;
+				LogicalType current_type = type;
+				while (current_type.id() == LogicalTypeId::LIST) {
+					depth++;
+					current_type = ListType::GetChildType(current_type);
+				}
+				if (depth > max_depth) {
+					max_depth = depth;
+					deepest_list_type = type;
+				}
+			}
+		}
+		if (max_depth > 0) {
+			return deepest_list_type;
+		}
+		for (const auto &type : types) {
+			if (type.id() == LogicalTypeId::LIST) {
+				return type;
+			}
+		}
+	}
+
+	if (struct_count > 0) {
+		for (const auto &type : types) {
+			if (type.id() == LogicalTypeId::STRUCT) {
+				return type;
+			}
+		}
 	}
 
 	// For mixed types, use a priority-based approach that considers both
@@ -201,6 +256,473 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	return LogicalType::VARCHAR;
 }
 
+LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth);
+
+LogicalType InferNestedArrayType(bsoncxx::array::view array, int depth) {
+	const int MAX_DEPTH = 5;
+
+	if (depth > MAX_DEPTH) {
+		return LogicalType::VARCHAR;
+	}
+
+	if (array.begin() == array.end()) {
+		return LogicalType::VARCHAR;
+	}
+
+	auto first_element = *array.begin();
+
+	if (first_element.type() == bsoncxx::type::k_array) {
+		auto nested_array = first_element.get_array().value;
+		if (nested_array.begin() == nested_array.end()) {
+			return LogicalType::VARCHAR;
+		}
+
+		auto first_inner_element = *nested_array.begin();
+
+		if (first_inner_element.type() == bsoncxx::type::k_document) {
+			LogicalType struct_type = InferStructTypeFromArray(nested_array, depth + 1);
+			if (struct_type.id() == LogicalTypeId::STRUCT) {
+				return LogicalType::LIST(struct_type);
+			}
+			return LogicalType::VARCHAR;
+		} else if (first_inner_element.type() == bsoncxx::type::k_array) {
+			LogicalType deeper_type = InferNestedArrayType(nested_array, depth + 1);
+			if (deeper_type.id() == LogicalTypeId::LIST || deeper_type.id() == LogicalTypeId::VARCHAR) {
+				return LogicalType::LIST(deeper_type);
+			}
+			return LogicalType::VARCHAR;
+		} else {
+			LogicalType element_type = InferTypeFromBSONElement(first_inner_element);
+			return LogicalType::LIST(element_type);
+		}
+	} else {
+		LogicalType element_type = InferTypeFromBSONElement(first_element);
+		return LogicalType::LIST(element_type);
+	}
+}
+
+// Helper function to infer STRUCT type from array of objects
+// Scans multiple array elements to discover all fields
+LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
+	const int MAX_DEPTH = 5;
+	const int MAX_ARRAY_ELEMENTS_TO_SCAN = 10;
+
+	if (depth > MAX_DEPTH) {
+		return LogicalType::VARCHAR; // Fallback to JSON for deeply nested
+	}
+
+	std::map<std::string, std::vector<LogicalType>> struct_fields;
+
+	int element_count = 0;
+	for (auto it = array.begin(); it != array.end() && element_count < MAX_ARRAY_ELEMENTS_TO_SCAN;
+	     ++it, ++element_count) {
+		bsoncxx::array::element array_element = *it;
+		if (array_element.type() != bsoncxx::type::k_document) {
+			// Not an array of objects - return VARCHAR
+			return LogicalType::VARCHAR;
+		}
+
+		auto nested_doc = array_element.get_document().value;
+		for (const auto &field : nested_doc) {
+			std::string field_name = std::string(field.key().data(), field.key().length());
+
+			LogicalType field_type;
+			switch (field.type()) {
+			case bsoncxx::type::k_document: {
+				// Nested document - recursively infer STRUCT
+				auto inner_doc = field.get_document().value;
+				// For nested documents in arrays, we'll create nested STRUCT
+				// For now, store as VARCHAR to avoid complexity
+				field_type = LogicalType::VARCHAR;
+				break;
+			}
+			case bsoncxx::type::k_array: {
+				// Nested array - store as VARCHAR for now
+				// TODO: Support nested arrays (LIST(LIST(...)) or LIST(STRUCT(...)))
+				field_type = LogicalType::VARCHAR;
+				break;
+			}
+			default: {
+				field_type = InferTypeFromBSONElement(field);
+				break;
+			}
+			}
+
+			struct_fields[field_name].push_back(field_type);
+		}
+	}
+
+	if (struct_fields.empty()) {
+		return LogicalType::VARCHAR;
+	}
+
+	// Build STRUCT type from collected fields
+	child_list_t<LogicalType> struct_children;
+	for (const auto &pair : struct_fields) {
+		LogicalType resolved_type = ResolveTypeConflict(pair.second);
+		struct_children.push_back({pair.first, resolved_type});
+	}
+
+	return LogicalType::STRUCT(struct_children);
+}
+
+// Helper function to convert BSON document element to DuckDB Value
+Value BSONElementToValue(const bsoncxx::document::element &element, const LogicalType &target_type) {
+	if (!element || element.type() == bsoncxx::type::k_null) {
+		return Value(target_type);
+	}
+
+	switch (target_type.id()) {
+	case LogicalTypeId::VARCHAR: {
+		std::string str_val;
+		if (element.type() == bsoncxx::type::k_string) {
+			str_val = std::string(element.get_string().value.data(), element.get_string().value.length());
+		} else if (element.type() == bsoncxx::type::k_oid) {
+			str_val = element.get_oid().value.to_string();
+		} else if (element.type() == bsoncxx::type::k_document) {
+			str_val = NormalizeJson(bsoncxx::to_json(element.get_document().value));
+		} else if (element.type() == bsoncxx::type::k_array) {
+			str_val = NormalizeJson(bsoncxx::to_json(element.get_array().value));
+		} else {
+			str_val = "<unknown>";
+		}
+		return Value(str_val);
+	}
+	case LogicalTypeId::BIGINT: {
+		int64_t int_val = 0;
+		if (element.type() == bsoncxx::type::k_int32) {
+			int_val = element.get_int32().value;
+		} else if (element.type() == bsoncxx::type::k_int64) {
+			int_val = element.get_int64().value;
+		} else if (element.type() == bsoncxx::type::k_double) {
+			int_val = static_cast<int64_t>(element.get_double().value);
+		}
+		return Value::BIGINT(int_val);
+	}
+	case LogicalTypeId::DOUBLE: {
+		double double_val = 0.0;
+		if (element.type() == bsoncxx::type::k_double) {
+			double_val = element.get_double().value;
+		} else if (element.type() == bsoncxx::type::k_int32) {
+			double_val = static_cast<double>(element.get_int32().value);
+		} else if (element.type() == bsoncxx::type::k_int64) {
+			double_val = static_cast<double>(element.get_int64().value);
+		}
+		return Value::DOUBLE(double_val);
+	}
+	case LogicalTypeId::BOOLEAN: {
+		bool bool_val = false;
+		if (element.type() == bsoncxx::type::k_bool) {
+			bool_val = element.get_bool().value;
+		}
+		return Value::BOOLEAN(bool_val);
+	}
+	case LogicalTypeId::DATE: {
+		date_t date_val;
+		if (element.type() == bsoncxx::type::k_date) {
+			auto mongo_date = element.get_date();
+			auto ms_since_epoch = mongo_date.to_int64();
+			timestamp_t ts_val = Timestamp::FromEpochMs(ms_since_epoch);
+			date_val = Timestamp::GetDate(ts_val);
+		} else {
+			date_val = date_t(0);
+		}
+		return Value::DATE(date_val);
+	}
+	case LogicalTypeId::TIMESTAMP: {
+		timestamp_t ts_val;
+		if (element.type() == bsoncxx::type::k_date) {
+			auto date_val = element.get_date();
+			ts_val = Timestamp::FromEpochMs(date_val.to_int64());
+		} else {
+			ts_val = Timestamp::FromEpochMs(0);
+		}
+		return Value::TIMESTAMP(ts_val);
+	}
+	default:
+		return Value(target_type);
+	}
+}
+
+// Helper function to convert BSON document to DuckDB STRUCT Value
+Value BSONDocumentToStruct(const bsoncxx::document::view &doc, const LogicalType &struct_type) {
+	if (struct_type.id() != LogicalTypeId::STRUCT) {
+		return Value(struct_type);
+	}
+
+	auto child_types = StructType::GetChildTypes(struct_type);
+	vector<Value> struct_values;
+
+	for (const auto &child_type_pair : child_types) {
+		const std::string &field_name = child_type_pair.first;
+		const LogicalType &field_type = child_type_pair.second;
+
+		auto field_element = doc[field_name];
+		if (!field_element || field_element.type() == bsoncxx::type::k_null) {
+			struct_values.push_back(Value(field_type));
+		} else {
+			struct_values.push_back(BSONElementToValue(field_element, field_type));
+		}
+	}
+
+	return Value::STRUCT(struct_type, std::move(struct_values));
+}
+
+int GetBSONArrayDepth(const bsoncxx::array::view &array, int max_depth = 10) {
+	if (max_depth <= 0 || array.begin() == array.end()) {
+		return 0;
+	}
+
+	int max_element_depth = 0;
+	int element_count = 0;
+	for (const auto &element : array) {
+		element_count++;
+		if (element.type() == bsoncxx::type::k_array) {
+			auto nested_array = element.get_array().value;
+			int nested_depth = 1 + GetBSONArrayDepth(nested_array, max_depth - 1);
+			if (nested_depth > max_element_depth) {
+				max_element_depth = nested_depth;
+			}
+		} else {
+			if (max_element_depth < 1) {
+				max_element_depth = 1;
+			}
+		}
+	}
+	return max_element_depth;
+}
+
+int GetListTypeDepth(const LogicalType &list_type) {
+	int depth = 0;
+	LogicalType current_type = list_type;
+	while (current_type.id() == LogicalTypeId::LIST) {
+		depth++;
+		current_type = ListType::GetChildType(current_type);
+	}
+	return depth;
+}
+
+Value BSONArrayToList(const bsoncxx::array::view &array, const LogicalType &list_type) {
+	if (list_type.id() != LogicalTypeId::LIST) {
+		return Value(list_type);
+	}
+
+	D_ASSERT(list_type.id() == LogicalTypeId::LIST);
+
+	int expected_depth = GetListTypeDepth(list_type);
+	int actual_depth = GetBSONArrayDepth(array);
+
+	auto child_type = ListType::GetChildType(list_type);
+
+	// If actual depth is less than expected, wrap elements to match expected depth
+	if (actual_depth < expected_depth) {
+		// Determine the base element type (the innermost type)
+		LogicalType base_type = child_type;
+		for (int i = 1; i < expected_depth; i++) {
+			if (base_type.id() == LogicalTypeId::LIST) {
+				base_type = ListType::GetChildType(base_type);
+			}
+		}
+
+		// Build the type that matches the actual depth of nested arrays
+		LogicalType actual_nested_type = LogicalType::LIST(base_type);
+		for (int i = 1; i < actual_depth - 1; i++) {
+			actual_nested_type = LogicalType::LIST(actual_nested_type);
+		}
+
+		// Process elements directly and wrap them appropriately
+		vector<Value> list_values;
+		int depth_diff = expected_depth - actual_depth;
+
+		for (const auto &array_element : array) {
+			if (array_element.type() == bsoncxx::type::k_null) {
+				list_values.push_back(Value(child_type));
+			} else if (array_element.type() == bsoncxx::type::k_array) {
+				// Convert nested array to its actual depth first
+				auto nested_array = array_element.get_array().value;
+
+				// Convert nested array elements directly to avoid depth check issues
+				vector<Value> nested_list_values;
+				for (const auto &nested_elem : nested_array) {
+					if (nested_elem.type() == bsoncxx::type::k_null) {
+						nested_list_values.push_back(Value(base_type));
+					} else {
+						Value elem_val;
+						switch (nested_elem.type()) {
+						case bsoncxx::type::k_string: {
+							std::string str_val(nested_elem.get_string().value.data(),
+							                    nested_elem.get_string().value.length());
+							elem_val = Value(str_val);
+							break;
+						}
+						case bsoncxx::type::k_int32:
+							elem_val = Value::BIGINT(nested_elem.get_int32().value);
+							break;
+						case bsoncxx::type::k_int64:
+							elem_val = Value::BIGINT(nested_elem.get_int64().value);
+							break;
+						case bsoncxx::type::k_double:
+							elem_val = Value::DOUBLE(nested_elem.get_double().value);
+							break;
+						case bsoncxx::type::k_bool:
+							elem_val = Value::BOOLEAN(nested_elem.get_bool().value);
+							break;
+						default:
+							elem_val = Value(base_type);
+							break;
+						}
+						Value casted_val;
+						string error_msg;
+						if (elem_val.DefaultTryCastAs(base_type, casted_val, &error_msg)) {
+							nested_list_values.push_back(casted_val);
+						} else {
+							nested_list_values.push_back(Value(base_type));
+						}
+					}
+				}
+
+				// Create the nested list value at actual depth
+				Value nested_value;
+				try {
+					nested_value = Value::LIST(base_type, std::move(nested_list_values));
+				} catch (...) {
+					list_values.push_back(Value(child_type));
+					continue;
+				}
+
+				// Wrap the nested value to match child_type (wrap depth_diff times)
+				// The nested array is at depth (actual_depth - 1), and we need it at depth (expected_depth - 1)
+				// So we need to wrap it depth_diff times
+				Value wrapped = nested_value;
+				for (int i = 0; i < depth_diff; i++) {
+					vector<Value> wrapper_list;
+					wrapper_list.push_back(wrapped);
+					LogicalType wrapper_child_type = wrapped.type();
+					wrapped = Value::LIST(wrapper_child_type, std::move(wrapper_list));
+				}
+				list_values.push_back(wrapped);
+			} else {
+				// Non-array element - wrap it to match expected depth
+				Value elem_val;
+				switch (array_element.type()) {
+				case bsoncxx::type::k_string: {
+					std::string str_val(array_element.get_string().value.data(),
+					                    array_element.get_string().value.length());
+					elem_val = Value(str_val);
+					break;
+				}
+				case bsoncxx::type::k_int32:
+					elem_val = Value::BIGINT(array_element.get_int32().value);
+					break;
+				case bsoncxx::type::k_int64:
+					elem_val = Value::BIGINT(array_element.get_int64().value);
+					break;
+				case bsoncxx::type::k_double:
+					elem_val = Value::DOUBLE(array_element.get_double().value);
+					break;
+				case bsoncxx::type::k_bool:
+					elem_val = Value::BOOLEAN(array_element.get_bool().value);
+					break;
+				default:
+					elem_val = Value(base_type);
+					break;
+				}
+
+				// Wrap element to match expected depth
+				Value wrapped_elem = elem_val;
+				for (int i = 0; i < depth_diff; i++) {
+					vector<Value> wrapper_list;
+					wrapper_list.push_back(wrapped_elem);
+					LogicalType wrapper_child_type = wrapped_elem.type();
+					wrapped_elem = Value::LIST(wrapper_child_type, std::move(wrapper_list));
+				}
+				list_values.push_back(wrapped_elem);
+			}
+		}
+
+		try {
+			return Value::LIST(child_type, std::move(list_values));
+		} catch (...) {
+			return Value(list_type);
+		}
+	}
+
+	// If actual depth is greater than expected, return NULL (can't safely truncate)
+	if (actual_depth > expected_depth) {
+		return Value(list_type);
+	}
+
+	// Depths match - proceed with normal conversion
+	vector<Value> list_values;
+
+	for (const auto &array_element : array) {
+		if (array_element.type() == bsoncxx::type::k_null) {
+			list_values.push_back(Value(child_type));
+		} else if (child_type.id() == LogicalTypeId::STRUCT && array_element.type() == bsoncxx::type::k_document) {
+			auto doc = array_element.get_document().value;
+			list_values.push_back(BSONDocumentToStruct(doc, child_type));
+		} else if (child_type.id() == LogicalTypeId::LIST && array_element.type() == bsoncxx::type::k_array) {
+			auto nested_array = array_element.get_array().value;
+			int expected_nested_depth = GetListTypeDepth(child_type);
+			int actual_nested_depth = GetBSONArrayDepth(nested_array);
+
+			if (actual_nested_depth != expected_nested_depth) {
+				// Try to convert shallower arrays by wrapping
+				if (actual_nested_depth < expected_nested_depth) {
+					Value nested_value = BSONArrayToList(nested_array, child_type);
+					list_values.push_back(nested_value);
+				} else {
+					list_values.push_back(Value(child_type));
+				}
+			} else {
+				list_values.push_back(BSONArrayToList(nested_array, child_type));
+			}
+		} else {
+			if (child_type.id() == LogicalTypeId::LIST) {
+				list_values.push_back(Value(child_type));
+			} else {
+				Value elem_val;
+				switch (array_element.type()) {
+				case bsoncxx::type::k_string: {
+					std::string str_val(array_element.get_string().value.data(),
+					                    array_element.get_string().value.length());
+					elem_val = Value(str_val);
+					break;
+				}
+				case bsoncxx::type::k_int32:
+					elem_val = Value::BIGINT(array_element.get_int32().value);
+					break;
+				case bsoncxx::type::k_int64:
+					elem_val = Value::BIGINT(array_element.get_int64().value);
+					break;
+				case bsoncxx::type::k_double:
+					elem_val = Value::DOUBLE(array_element.get_double().value);
+					break;
+				case bsoncxx::type::k_bool:
+					elem_val = Value::BOOLEAN(array_element.get_bool().value);
+					break;
+				default:
+					elem_val = Value(child_type);
+					break;
+				}
+				Value casted_val;
+				string error_msg;
+				if (elem_val.DefaultTryCastAs(child_type, casted_val, &error_msg)) {
+					list_values.push_back(casted_val);
+				} else {
+					list_values.push_back(Value(child_type));
+				}
+			}
+		}
+	}
+
+	try {
+		return Value::LIST(child_type, std::move(list_values));
+	} catch (...) {
+		return Value(list_type);
+	}
+}
+
 void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &prefix, int depth,
                        std::unordered_map<std::string, vector<LogicalType>> &field_types,
                        std::unordered_map<std::string, std::string> &flattened_to_mongo_path) {
@@ -226,29 +748,48 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 			// Recursively process nested document
 			auto nested_doc = element.get_document().value;
 			CollectFieldPaths(nested_doc, full_path, depth + 1, field_types, flattened_to_mongo_path);
-			// Also store the document itself as JSON
-			field_types[full_path].push_back(LogicalType::VARCHAR);
+			// Don't store the document itself as JSON when we have nested fields
+			// This prevents VARCHAR from overriding nested STRUCT types
 			break;
 		}
 		case bsoncxx::type::k_array: {
-			// Arrays stored as JSON
-			field_types[full_path].push_back(LogicalType::VARCHAR);
-			// Try to infer array element type
 			auto array = element.get_array().value;
-			if (array.begin() != array.end()) {
-				auto first_element = *array.begin();
-				if (first_element.type() == bsoncxx::type::k_document) {
-					// Array of objects - collect paths with array prefix
-					auto nested_doc = first_element.get_document().value;
-					std::string array_item_path = full_path + "_item";
-					std::string array_item_mongo_path = mongo_path + ".item";
-					flattened_to_mongo_path[array_item_path] = array_item_mongo_path;
-					CollectFieldPaths(nested_doc, array_item_path, depth + 1, field_types, flattened_to_mongo_path);
+			if (array.begin() == array.end()) {
+				// Empty array - store as VARCHAR
+				field_types[full_path].push_back(LogicalType::VARCHAR);
+				break;
+			}
+
+			// Check first element to determine array type
+			auto first_element = *array.begin();
+
+			if (first_element.type() == bsoncxx::type::k_document) {
+				// Array of objects - infer STRUCT type and create LIST(STRUCT(...))
+				LogicalType struct_type = InferStructTypeFromArray(array, depth);
+				if (struct_type.id() == LogicalTypeId::STRUCT) {
+					// Create LIST(STRUCT(...)) type
+					LogicalType list_type = LogicalType::LIST(struct_type);
+					field_types[full_path].push_back(list_type);
+				} else {
+					// Fallback to VARCHAR if struct inference failed
+					field_types[full_path].push_back(LogicalType::VARCHAR);
 				}
-				// TODO: Support arrays of arrays (e.g., matrix: [[1,2], [3,4]])
-				// Would create columns like matrix_item_item for matrix[0][0]
-				// Implementation: Check if first_element.type() == bsoncxx::type::k_array,
-				// then recursively process nested array elements
+			} else if (first_element.type() == bsoncxx::type::k_array) {
+				// Array of arrays - recursively infer nested array type
+				LogicalType nested_list_type = InferNestedArrayType(array, depth);
+				if (nested_list_type.id() == LogicalTypeId::LIST) {
+					// Create LIST(LIST(...)) type
+					LogicalType list_type = LogicalType::LIST(nested_list_type);
+					field_types[full_path].push_back(list_type);
+				} else {
+					// Fallback to VARCHAR if inference failed
+					field_types[full_path].push_back(LogicalType::VARCHAR);
+				}
+			} else {
+				// Array of primitives - infer element type and create LIST
+				LogicalType element_type = InferTypeFromBSONElement(first_element);
+				LogicalType list_type = LogicalType::LIST(element_type);
+				field_types[full_path].push_back(list_type);
 			}
 			break;
 		}
@@ -341,113 +882,117 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 		return found ? result : bsoncxx::document::element {};
 	};
 
-	// Extract value from array element field
-	// Returns value from first array element, handles arrays of objects recursively
-	// Note: Only handles arrays of objects, not arrays of arrays (e.g., [[1,2]] stored as JSON)
-	auto getArrayElementValue = [&](const std::string &column_name) -> bsoncxx::document::element {
-		std::function<bsoncxx::document::element(bsoncxx::document::view, const std::string &, bool)> navigatePath =
-		    [&](bsoncxx::document::view current_doc, const std::string &path,
-		        bool expect_array) -> bsoncxx::document::element {
-			if (path.empty()) {
-				return bsoncxx::document::element {};
+	auto getArrayByPath = [&](const std::string &path) -> bsoncxx::array::view {
+		std::istringstream iss(path);
+		std::string segment;
+		bsoncxx::document::view current = doc;
+		bsoncxx::document::element result;
+
+		while (std::getline(iss, segment, '_')) {
+			auto element = current[segment];
+			if (!element) {
+				return bsoncxx::array::view {};
 			}
-
-			size_t item_pos = path.find("_item");
-			if (item_pos != std::string::npos) {
-				std::string array_path = path.substr(0, item_pos);
-				std::string remaining_path = path.substr(item_pos + 5);
-				if (!remaining_path.empty() && remaining_path[0] == '_') {
-					remaining_path = remaining_path.substr(1);
-				}
-
-				std::istringstream iss(array_path);
-				std::string segment;
-				bsoncxx::document::view doc_view = current_doc;
-				bsoncxx::document::element array_element;
-
-				while (std::getline(iss, segment, '_')) {
-					auto element = doc_view[segment];
-					if (!element) {
-						return bsoncxx::document::element {};
-					}
-					array_element = element;
-					if (array_element.type() == bsoncxx::type::k_document) {
-						doc_view = array_element.get_document().value;
-					} else {
-						break;
-					}
-				}
-
-				std::istringstream iss2(array_path);
-				std::string array_field_name;
-				while (std::getline(iss2, segment, '_')) {
-					array_field_name = segment;
-				}
-
-				auto arr_element = doc_view[array_field_name];
-				if (!arr_element || arr_element.type() != bsoncxx::type::k_array) {
-					return bsoncxx::document::element {};
-				}
-
-				auto array = arr_element.get_array().value;
-				auto it = array.begin();
-				if (it == array.end()) {
-					return bsoncxx::document::element {};
-				}
-
-				auto first_element = *it;
-				if (first_element.type() != bsoncxx::type::k_document) {
-					// TODO: Support arrays of arrays - if first_element.type() == k_array,
-					// recursively extract from nested array (e.g., matrix_item_item for matrix[0][0])
-					return bsoncxx::document::element {};
-				}
-
-				return navigatePath(first_element.get_document().value, remaining_path, false);
+			result = element;
+			if (result.type() == bsoncxx::type::k_document) {
+				current = result.get_document().value;
+			} else if (result.type() == bsoncxx::type::k_array) {
+				return result.get_array().value;
 			} else {
-				std::istringstream iss(path);
-				std::string segment;
-				bsoncxx::document::view doc_view = current_doc;
-				bsoncxx::document::element result;
-
-				while (std::getline(iss, segment, '_')) {
-					auto element = doc_view[segment];
-					if (!element) {
-						return bsoncxx::document::element {};
-					}
-					result = element;
-					if (result.type() == bsoncxx::type::k_document) {
-						doc_view = result.get_document().value;
-					} else {
-						break;
-					}
-				}
-				return result;
+				return bsoncxx::array::view {};
 			}
-		};
+		}
 
-		return navigatePath(doc, column_name, false);
+		if (result && result.type() == bsoncxx::type::k_array) {
+			return result.get_array().value;
+		}
+		return bsoncxx::array::view {};
 	};
 
 	for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
 		const auto &column_name = column_names[col_idx];
 		const auto &column_type = column_types[col_idx];
 
-		// Try direct lookup first
+		if (column_type.id() == LogicalTypeId::LIST) {
+			auto element = doc[column_name];
+			bsoncxx::array::view array_view;
+
+			if (element && element.type() == bsoncxx::type::k_array) {
+				array_view = element.get_array().value;
+			} else {
+				array_view = getArrayByPath(column_name);
+			}
+
+			auto &vec = output.data[col_idx];
+			if (array_view.begin() == array_view.end()) {
+				Value empty_list = Value::LIST(ListType::GetChildType(column_type), vector<Value>());
+				if (empty_list.type() != column_type) {
+					Value casted_list;
+					string error_msg;
+					if (!empty_list.DefaultTryCastAs(column_type, casted_list, &error_msg)) {
+						FlatVector::SetNull(vec, row_idx, true);
+						continue;
+					}
+					empty_list = casted_list;
+				}
+				vec.SetValue(row_idx, empty_list);
+			} else {
+				// BSONArrayToList now handles depth mismatches by wrapping shallower arrays
+				Value list_value = BSONArrayToList(array_view, column_type);
+				if (list_value.type() != column_type) {
+					Value casted_list;
+					string error_msg;
+					if (!list_value.DefaultTryCastAs(column_type, casted_list, &error_msg)) {
+						FlatVector::SetNull(vec, row_idx, true);
+					} else {
+						vec.SetValue(row_idx, casted_list);
+					}
+				} else {
+					vec.SetValue(row_idx, list_value);
+				}
+			}
+			continue;
+		}
+
+		if (column_type.id() == LogicalTypeId::STRUCT) {
+			auto element = doc[column_name];
+			bsoncxx::document::view struct_doc;
+
+			auto &vec = output.data[col_idx];
+			if (element && element.type() == bsoncxx::type::k_document) {
+				struct_doc = element.get_document().value;
+			} else {
+				Value null_struct = Value(column_type);
+				vec.SetValue(row_idx, null_struct);
+				continue;
+			}
+
+			Value struct_value = BSONDocumentToStruct(struct_doc, column_type);
+			if (struct_value.type() != column_type) {
+				Value casted_struct;
+				string error_msg;
+				if (!struct_value.DefaultTryCastAs(column_type, casted_struct, &error_msg)) {
+					FlatVector::SetNull(vec, row_idx, true);
+					continue;
+				}
+				struct_value = casted_struct;
+			}
+			vec.SetValue(row_idx, struct_value);
+			continue;
+		}
+
+		// Handle scalar types (existing logic)
 		auto element = doc[column_name];
 
 		if (!element) {
-			// Check if this is an array element column
-			if (column_name.find("_item") != std::string::npos) {
-				element = getArrayElementValue(column_name);
-			} else {
-				// Try path-based lookup for nested fields
-				element = getElementByPath(column_name);
-			}
-			if (!element || element.type() == bsoncxx::type::k_null) {
-				// Field not found - set to NULL
-				FlatVector::SetNull(output.data[col_idx], row_idx, true);
-				continue;
-			}
+			// Try path-based lookup for nested fields
+			element = getElementByPath(column_name);
+		}
+
+		if (!element || element.type() == bsoncxx::type::k_null) {
+			// Field not found - set to NULL
+			FlatVector::SetNull(output.data[col_idx], row_idx, true);
+			continue;
 		}
 
 		switch (column_type.id()) {
@@ -848,14 +1393,12 @@ bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &filter, c
 		break;
 	}
 	default:
-		// Unsupported filter type, return empty filter
 		break;
 	}
 
 	return doc.extract();
 }
 
-// Convert DuckDB filters to MongoDB query
 bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,
                                                     const vector<string> &column_names,
                                                     const vector<LogicalType> &column_types,
@@ -866,50 +1409,34 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 		return query_builder.extract();
 	}
 
-	// Group filters by column name to merge multiple filters on same column
 	map<string, bsoncxx::builder::basic::document> column_filters;
 
 	for (const auto &filter_pair : filters->filters) {
 		idx_t col_idx = filter_pair.first;
 		if (col_idx >= column_names.size()) {
-			std::cerr << "[DEBUG] Skipping filter: col_idx " << col_idx << " >= column_names.size() "
-			          << column_names.size() << std::endl;
 			continue;
 		}
 
 		const auto &filter = filter_pair.second;
 		const string &column_name = column_names[col_idx];
 
-		// Convert flattened column name to MongoDB dot notation using stored mapping
 		string mongo_column_name;
 		auto path_it = column_name_to_mongo_path.find(column_name);
 		if (path_it != column_name_to_mongo_path.end()) {
 			mongo_column_name = path_it->second;
 		} else {
-			// Fallback: use column name as-is (top-level field)
 			mongo_column_name = column_name;
 		}
 
-		// Check if this is an _item column (array element column)
-		bool is_item_column = column_name.find("_item") != std::string::npos;
 		const LogicalType &column_type = col_idx < column_types.size() ? column_types[col_idx] : LogicalType::VARCHAR;
 
 		bsoncxx::document::value filter_doc = bsoncxx::builder::basic::document {}.extract();
-		if (is_item_column) {
-			// Convert items_item.product to array name and field path
-			size_t item_pos = mongo_column_name.find("_item");
-			if (item_pos != std::string::npos) {
-				string array_name = mongo_column_name.substr(0, item_pos);
-				string field_path = mongo_column_name.substr(item_pos + 5);
 
-				// Remove leading dot if present
-				if (!field_path.empty() && field_path[0] == '.') {
-					field_path = field_path.substr(1);
-				}
-
-				// Build $elemMatch query: {array_name: {$elemMatch: {field_path: value}}}
-				// Matches any element in the array, not just the first
-				auto elem_match_doc = ConvertSingleFilterToMongo(*filter, field_path, column_type);
+		if (column_type.id() == LogicalTypeId::LIST) {
+			auto child_type = ListType::GetChildType(column_type);
+			if (child_type.id() == LogicalTypeId::STRUCT) {
+				string field_path = mongo_column_name;
+				auto elem_match_doc = ConvertSingleFilterToMongo(*filter, field_path, child_type);
 				if (!elem_match_doc.view().empty()) {
 					bsoncxx::builder::basic::document elem_match_builder;
 					for (auto doc_it = elem_match_doc.view().begin(); doc_it != elem_match_doc.view().end(); ++doc_it) {
@@ -919,13 +1446,13 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 					array_filter_builder.append(
 					    bsoncxx::builder::basic::kvp("$elemMatch", elem_match_builder.extract()));
 					bsoncxx::builder::basic::document final_doc;
-					final_doc.append(bsoncxx::builder::basic::kvp(array_name, array_filter_builder.extract()));
+					final_doc.append(bsoncxx::builder::basic::kvp(mongo_column_name, array_filter_builder.extract()));
 					filter_doc = final_doc.extract();
 				} else {
 					continue;
 				}
 			} else {
-				continue;
+				filter_doc = ConvertSingleFilterToMongo(*filter, mongo_column_name, child_type);
 			}
 		} else {
 			filter_doc = ConvertSingleFilterToMongo(*filter, mongo_column_name, column_type);
@@ -935,12 +1462,14 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 			continue;
 		}
 
-		// For _item columns, add directly to query (already in $elemMatch format)
-		if (is_item_column) {
-			for (auto doc_it = filter_doc.view().begin(); doc_it != filter_doc.view().end(); ++doc_it) {
-				query_builder.append(bsoncxx::builder::basic::kvp(doc_it->key(), doc_it->get_value()));
+		if (column_type.id() == LogicalTypeId::LIST) {
+			auto child_type = ListType::GetChildType(column_type);
+			if (child_type.id() == LogicalTypeId::STRUCT) {
+				for (auto doc_it = filter_doc.view().begin(); doc_it != filter_doc.view().end(); ++doc_it) {
+					query_builder.append(bsoncxx::builder::basic::kvp(doc_it->key(), doc_it->get_value()));
+				}
+				continue;
 			}
-			continue;
 		}
 
 		// Extract column filter from document
@@ -1086,9 +1615,18 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	idx_t count = 0;
 	const idx_t max_count = STANDARD_VECTOR_SIZE;
 
-	// Initialize output vectors
+	if (output.data.empty()) {
+		output.Initialize(context, bind_data.column_types);
+	}
+
 	for (idx_t col_idx = 0; col_idx < bind_data.column_names.size(); col_idx++) {
-		output.data[col_idx].SetVectorType(VectorType::FLAT_VECTOR);
+		auto &vec = output.data[col_idx];
+		vec.SetVectorType(VectorType::FLAT_VECTOR);
+		if ((bind_data.column_types[col_idx].id() == LogicalTypeId::LIST ||
+		     bind_data.column_types[col_idx].id() == LogicalTypeId::STRUCT) &&
+		    !vec.GetAuxiliary()) {
+			vec.Initialize(false, STANDARD_VECTOR_SIZE);
+		}
 	}
 
 	while (count < max_count && *state.current != *state.end) {

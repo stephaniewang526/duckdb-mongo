@@ -134,6 +134,25 @@ db.products.insertMany([
   }
 ]);
 
+// Create matrix collection with arrays of arrays
+db.matrix.insertMany([
+  {
+    _id: 'MAT-001',
+    name: '2D Matrix',
+    data: [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+  },
+  {
+    _id: 'MAT-002',
+    name: '3D Matrix',
+    data: [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+  },
+  {
+    _id: 'MAT-003',
+    name: 'Mixed Matrix',
+    data: [[10, 20], [30, 40], [50, 60]]
+  }
+]);
+
 // Create orders collection with nested arrays
 db.orders.insertMany([
   {

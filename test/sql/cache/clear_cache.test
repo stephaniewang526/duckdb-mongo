@@ -45,15 +45,15 @@ SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo' 
   AND table_schema = 'duckdb_mongo_test';
 ----
-6
+7
 
-# Query collections again - should use cached data (same results, but from cache)
+# Query collections again - should use cached data
 query I
 SELECT COUNT(*) FROM information_schema.tables 
 WHERE table_catalog = 'test_mongo' 
   AND table_schema = 'duckdb_mongo_test';
 ----
-6
+7
 
 # Get list of collections (this uses cached collection names)
 query T
@@ -64,6 +64,7 @@ ORDER BY table_name;
 ----
 deeply_nested
 empty_collection
+matrix
 orders
 products
 type_conflicts
@@ -77,14 +78,13 @@ users
 statement ok
 SELECT * FROM mongo_clear_cache();
 
-# Query collections again - should fetch fresh data from MongoDB (not from stale cache)
-# Even though the data is the same, this proves cache was cleared and fresh fetch occurred
+# Query collections again - should fetch fresh data from MongoDB
 query I
 SELECT COUNT(*) FROM information_schema.tables 
 WHERE table_catalog = 'test_mongo' 
   AND table_schema = 'duckdb_mongo_test';
 ----
-6
+7
 
 # Verify we get the same collections (proving fresh data was fetched, not stale cache)
 query T
@@ -95,6 +95,7 @@ ORDER BY table_name;
 ----
 deeply_nested
 empty_collection
+matrix
 orders
 products
 type_conflicts

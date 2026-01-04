@@ -2,8 +2,6 @@
 # description: Comprehensive schema inference tests for arrays, nested objects, and edge cases
 # group: [schema]
 
-# This test consolidates and expands coverage from arrays.test and nested.test
-
 require mongo
 
 require-env MONGODB_TEST_DATABASE_AVAILABLE
@@ -25,25 +23,25 @@ SELECT COUNT(*) FROM mongo_test.users WHERE tags IS NOT NULL;
 query II
 SELECT name, tags FROM mongo_test.users WHERE name = 'Alice';
 ----
-Alice	["admin","user"]
+Alice	[admin, user]
 
 # Test array in products collection
 query II
 SELECT name, tags FROM mongo_test.products WHERE name = 'Laptop';
 ----
-Laptop	["computer","electronics","laptop"]
+Laptop	[computer, electronics, laptop]
 
 # Test array with single element
 query II
 SELECT name, tags FROM mongo_test.users WHERE name = 'Bob';
 ----
-Bob	["user"]
+Bob	[user]
 
 # Test array with multiple elements
 query II
 SELECT name, tags FROM mongo_test.users WHERE name = 'Charlie';
 ----
-Charlie	["admin","premium"]
+Charlie	[admin, premium]
 
 # ============================================================================
 # Nested Objects
@@ -77,7 +75,7 @@ Desk	Wood	120
 # Test deeply nested collection (6 levels - stored as JSON at level 5 due to MAX_DEPTH=5)
 # Documents deeper than 5 levels are stored as JSON/VARCHAR at the 5th level
 query I
-SELECT COUNT(*) FROM mongo_test.deeply_nested WHERE level1_level2_level3_level4_level5 IS NOT NULL;
+SELECT COUNT(*) FROM mongo_test.deeply_nested WHERE level1_level2_level3_level4_level5_level6 IS NOT NULL;
 ----
 1
 
