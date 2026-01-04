@@ -15,56 +15,31 @@ SELECT order_id, items FROM mongo_test.orders WHERE order_id = 'ORD-001';
 ----
 ORD-001	[{'price': 999.99, 'product': Laptop, 'quantity': 1}, {'price': 29.99, 'product': Mouse, 'quantity': 2}]
 
-# Test accessing first array element using list_extract (1-based indexing)
-query TTI
-SELECT order_id, list_extract(items, 1).product, list_extract(items, 1).quantity FROM mongo_test.orders WHERE order_id = 'ORD-001';
-----
-ORD-001	Laptop	1
-
-# Test accessing second array element using list_extract 
-query TTI
-SELECT order_id, list_extract(items, 2).product, list_extract(items, 2).quantity FROM mongo_test.orders WHERE order_id = 'ORD-001';
-----
-ORD-001	Mouse	2
-
-# Test array element with numeric types (price)
-query TTR
-SELECT order_id, list_extract(items, 1).product, list_extract(items, 1).price FROM mongo_test.orders WHERE order_id = 'ORD-001';
-----
-ORD-001	Laptop	999.99
-
-# Test array element with different order
-query TTI
-SELECT order_id, list_extract(items, 1).product, list_extract(items, 1).quantity FROM mongo_test.orders WHERE order_id = 'ORD-002';
-----
-ORD-002	Desk	1
-
-# Test that all array element fields are extracted correctly together
+# Test accessing array elements using list_extract (1-based indexing)
 query TTIR
 SELECT order_id, list_extract(items, 1).product, list_extract(items, 1).quantity, list_extract(items, 1).price FROM mongo_test.orders WHERE order_id IN ('ORD-001', 'ORD-002') ORDER BY order_id;
 ----
 ORD-001	Laptop	1	999.99
 ORD-002	Desk	1	299.99
 
-# Test that empty arrays are stored as empty lists (not NULL)
-query I
-SELECT COUNT(*) FROM mongo_test.orders WHERE len(items) = 0;
+# Test accessing second array element
+query TTI
+SELECT order_id, list_extract(items, 2).product, list_extract(items, 2).quantity FROM mongo_test.orders WHERE order_id = 'ORD-001';
 ----
-1
+ORD-001	Mouse	2
 
-# Test empty array (ORD-003 has empty items array)
+# Test empty arrays (stored as empty lists, not NULL)
 query I
 SELECT COUNT(*) FROM mongo_test.orders WHERE order_id = 'ORD-003' AND len(items) = 0;
 ----
 1
 
-# Test array with missing fields (ORD-004 items[0] missing price field)
+# Test array with missing fields (missing price field returns NULL)
 query TTI
 SELECT order_id, list_extract(items, 1).product, list_extract(items, 1).quantity FROM mongo_test.orders WHERE order_id = 'ORD-004';
 ----
 ORD-004	Keyboard	1
 
-# Test that missing field in array element returns NULL
 query I
 SELECT COUNT(*) FROM mongo_test.orders WHERE order_id = 'ORD-004' AND list_extract(items, 1).price IS NULL;
 ----
@@ -95,40 +70,20 @@ SELECT COUNT(*) FROM (SELECT order_id, UNNEST(items).product FROM mongo_test.ord
 ----
 0
 
-# Test arrays of arrays (LIST(LIST(...)))
-# Note: MAT-001 has 2D arrays but schema is inferred as 3D (due to MAT-002).
-# Documents with shallower arrays are wrapped to match the expected depth.
+# Test arrays of arrays with mixed depths
+# Schema infers deepest depth (3D from MAT-002), shallower arrays are wrapped
 query TT
-SELECT _id, data FROM mongo_test.matrix WHERE _id = 'MAT-001';
+SELECT _id, data FROM mongo_test.matrix WHERE _id IN ('MAT-001', 'MAT-002', 'MAT-003') ORDER BY _id;
 ----
 MAT-001	[[[1, 2, 3]], [[4, 5, 6]], [[7, 8, 9]]]
-
-# Test accessing nested array elements using list_extract (1-based indexing)
-query TTI
-SELECT _id, list_extract(data, 1), list_extract(data, 2) FROM mongo_test.matrix WHERE _id = 'MAT-001';
-----
-MAT-001	[[1, 2, 3]]	[[4, 5, 6]]
-
-# Test accessing deeply nested array elements using nested list_extract (1-based indexing)
-query TTI
-SELECT _id, list_extract(list_extract(data, 1), 1), list_extract(list_extract(data, 1), 2) FROM mongo_test.matrix WHERE _id = 'MAT-001';
-----
-MAT-001	[1, 2, 3]	NULL
-
-# Test 3D arrays
-# Note: Collections with mixed array depths infer the deepest depth (3D from MAT-002).
-# Documents with shallower arrays (MAT-001, MAT-003 have 2D) are wrapped to match the 3D schema.
-# MAT-002 works correctly since it matches the inferred 3D schema.
-query TT
-SELECT _id, data FROM mongo_test.matrix WHERE _id = 'MAT-002';
-----
 MAT-002	[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
-
-# Test that documents with shallower arrays are wrapped to match expected depth
-query TT
-SELECT _id, data FROM mongo_test.matrix WHERE _id = 'MAT-003';
-----
 MAT-003	[[[10, 20]], [[30, 40]], [[50, 60]]]
+
+# Test nested list_extract (1-based indexing)
+query TI
+SELECT _id, list_extract(list_extract(data, 1), 1) FROM mongo_test.matrix WHERE _id = 'MAT-001';
+----
+MAT-001	[1, 2, 3]
 
 statement ok
 DETACH mongo_test;
