@@ -121,32 +121,32 @@ LOAD '/path/to/mongo.duckdb_extension';
 
 ### Connection String Format
 
-**Key-value format:**
+**1. Key-value format:**
 ```sql
 ATTACH 'host=localhost port=27017' AS mongo_db (TYPE MONGO);
 ATTACH 'host=localhost port=27017 dbname=mydb' AS mongo_db (TYPE MONGO);
 ATTACH 'host=cluster0.xxxxx.mongodb.net user=myuser password=mypass srv=true' AS atlas_db (TYPE MONGO);
 ```
 
-**MongoDB URI format:**
+**2. MongoDB URI format:**
 ```sql
 ATTACH 'mongodb://user:pass@localhost:27017/mydb' AS mongo_db (TYPE MONGO);
 ```
 
 **Connection Parameters:**
 
-| Name | Description | Default | Applies To |
-|------|-------------|---------|------------|
-| `host` | MongoDB hostname or IP address | `localhost` | Both |
-| `port` | MongoDB port number | `27017` | Both |
-| `user` / `username` | MongoDB username | - | Both |
-| `password` | MongoDB password | - | Both |
-| `dbname` / `database` | Specific MongoDB database to connect to | - | Both |
-| `authsource` | Authentication database | - | Both |
-| `srv` | Use SRV connection format (for MongoDB Atlas) | `false` | Both |
-| `options` | Additional MongoDB connection string query parameters | - | Connection string only |
+| Name | Description | Default | Applies To Format |
+|------|-------------|---------|-------------------|
+| `host` | MongoDB hostname or IP address | `localhost` | Both 1 and 2 |
+| `port` | MongoDB port number | `27017` | Both 1 and 2 |
+| `user` / `username` | MongoDB username | - | Both 1 and 2 |
+| `password` | MongoDB password | - | Both 1 and 2 |
+| `dbname` / `database` | Specific MongoDB database to connect to | - | Both 1 and 2 |
+| `authsource` | Authentication database | - | Both 1 and 2 |
+| `srv` | Use SRV connection format (for MongoDB Atlas) | `false` | Both 1 and 2 |
+| `options` | Additional MongoDB connection string query parameters | - | Format 1 only |
 
-**Tip:** For replica sets (including MongoDB Atlas), use `readPreference=secondaryPreferred` to route reads to secondaries.
+> **Tip:** For replica sets (including MongoDB Atlas), use `readPreference=secondaryPreferred` to route reads to secondaries.
 
 ### Using DuckDB Secrets
 
@@ -173,7 +173,7 @@ ATTACH '' AS mongo_db (TYPE mongo);  -- Uses __default_mongo automatically
 ATTACH 'dbname=mydb' AS mongo_db (TYPE mongo);  -- Options merge with secret
 ```
 
-**Note:** An explicit database alias (`AS alias_name`) is required. The `dbname` parameter specifies which MongoDB database to connect to, not the DuckDB database name.
+> **Note:** An explicit database alias (`AS alias_name`) is required. The `dbname` parameter specifies which MongoDB database to connect to, not the DuckDB database name.
 
 ### Entity Mapping
 
@@ -299,6 +299,24 @@ SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
                          filter := '{"status": "active"}', sample_size := 200);
 ```
 
+### Cache Management
+
+When using `ATTACH` to connect to MongoDB, the extension caches schema information, collection names, and view metadata to improve query performance. If the MongoDB schema changes (e.g., new collections are added, or collection schemas change), you may need to clear the cache:
+
+```sql
+-- Clear all MongoDB caches for all attached databases
+SELECT * FROM mongo_clear_cache();
+```
+
+This function clears all caches for all attached MongoDB databases:
+- Collection names cache
+- View info cache (including schema information)
+- Schema cache
+
+> **Note:** Currently, cache clearing is all-or-nothing (all databases). Selective cache clearing for specific databases or collections is not yet supported.
+
+After clearing the cache, the next query will re-scan schemas and re-infer collection schemas.
+
 ## Reference
 
 ### BSON Type Mapping
@@ -351,7 +369,7 @@ The extension automatically infers schemas by sampling documents (default: 100, 
   -- Returns multiple rows, one per array element
   ```
   
-  **Note:** For filtering on array elements, see the [Pushdown Strategy](#pushdown-strategy) section.
+  > **Note:** For filtering on array elements, see the [Pushdown Strategy](#pushdown-strategy) section.
 
 **Arrays of Primitives:**
 - Arrays of primitives (strings, numbers) are stored as `LIST` types
@@ -381,7 +399,7 @@ The extension automatically infers schemas by sampling documents (default: 100, 
 
 - Read-only
 - Schema inferred from sample (may miss fields)
-- Schema re-inferred per query
+- Schema re-inferred per query when using `mongo_scan` table function directly (schema is cached when using `ATTACH` catalog views; use `mongo_clear_cache()` to invalidate cache)
 - **Nested documents in arrays**: Nested documents within array elements are stored as VARCHAR (JSON strings) rather than nested STRUCT types
   - Example: `items: [{product: 'Laptop', specs: {cpu: 'Intel', ram: '16GB'}}]` → `specs` field is VARCHAR, not STRUCT
   - This is a simplification to avoid complex nested STRUCT handling
@@ -509,80 +527,102 @@ The extension provides **direct SQL access to MongoDB without exporting or copyi
 
 The extension uses a selective pushdown strategy that leverages MongoDB's indexing capabilities while utilizing DuckDB's analytical strengths:
 
-**Pushed Down to MongoDB:** Filters (WHERE clauses) and LIMIT clauses to reduce data transfer and leverage MongoDB indexes.
+**Pushed Down to MongoDB:**
+- **Filters (WHERE clauses)**: Automatically converted to MongoDB `$match` queries to leverage indexes
+- **LIMIT clauses**: When directly above table scan (without ORDER BY, aggregations, or joins)
 
-**Kept in DuckDB:** Aggregations, joins, and complex SQL features (window functions, CTEs, subqueries) where DuckDB's query optimizer and execution engine excel.
-
-This hybrid approach provides fast indexed filtering from MongoDB combined with powerful analytical processing from DuckDB, optimizing performance for both simple filtered queries and complex analytical workloads.
+**Kept in DuckDB:**
+- Aggregations (GROUP BY, COUNT, SUM, etc.)
+- Joins
+- Window functions (ROW_NUMBER, RANK, LAG, etc.)
+- Complex SQL features (CTEs, subqueries)
+- ORDER BY (uses DuckDB's `TOP_N` operator)
 
 #### Filter Pushdown
 
-WHERE clauses are automatically converted to MongoDB `$match` queries, allowing MongoDB to leverage indexes for efficient filtering.
+WHERE clauses are automatically converted to MongoDB `$match` queries. Use `EXPLAIN` to see which operations are pushed down:
+
+```sql
+-- Filter pushed down to MongoDB
+EXPLAIN SELECT * FROM mongo_test.duckdb_mongo_test.orders WHERE status = 'completed';
+```
+
+The plan shows filters in `MONGO_SCAN`, indicating pushdown:
+
+```
+┌─────────────────────────────┐
+│┌───────────────────────────┐│
+││       Physical Plan       ││
+│└───────────────────────────┘│
+└─────────────────────────────┘
+┌───────────────────────────┐
+│        MONGO_SCAN         │
+│    ────────────────────   │
+│    Function: MONGO_SCAN   │
+│                           │
+│          Filters:         │
+│     status='completed'    │  ← Pushed to MongoDB
+│                           │
+│           ~1 row          │
+└───────────────────────────┘
+```
+
+For aggregations, filters are pushed down while aggregation happens in DuckDB:
 
 **Supported Filter Operations:**
 
 - **Comparison operators**: `=`, `!=`, `<`, `<=`, `>`, `>=`
-- **IN clauses**: `WHERE status IN ('active', 'pending')` → `{status: {$in: ['active', 'pending']}}`
+- **IN clauses**: `WHERE status IN ('active', 'pending')` → MongoDB `{status: {$in: ['active', 'pending']}}`
 - **NULL checks**: `IS NULL` and `IS NOT NULL`
-- **Multiple conditions**: AND/OR combinations are merged into efficient MongoDB queries
-- **Nested fields**: Filters on flattened nested fields (e.g., `address_city`) are converted to dot notation
+- **Multiple conditions**: AND/OR combinations merged into efficient MongoDB queries
+- **Nested fields**: Flattened fields (e.g., `address_city`) converted to dot notation (`address.city`)
+
+**Examples:**
+
+```sql
+-- Equality
+SELECT * FROM users WHERE active = true;
+-- MongoDB: {active: true}
+
+-- Range
+SELECT * FROM users WHERE age > 28 AND age < 40;
+-- MongoDB: {age: {$gt: 28, $lt: 40}}
+
+-- IN
+SELECT * FROM users WHERE status IN ('active', 'pending');
+-- MongoDB: {status: {$in: ['active', 'pending']}}
+
+-- Nested field
+SELECT * FROM users WHERE address_city = 'New York';
+-- MongoDB: {'address.city': 'New York'}
+```
 
 **Array Filtering:**
 
-DuckDB doesn't support direct field access on LIST types (e.g., `items.product`). To filter on array elements, use `UNNEST` to expand the array first:
+To filter on array elements, use `UNNEST` to expand arrays first:
 
 ```sql
--- Filter on array element fields using UNNEST
-SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest WHERE unnest.product = 'Mouse';
-
--- Multiple conditions on same array element
+-- Filter on array elements
 SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest 
-WHERE unnest.product = 'Laptop' AND unnest.quantity = 1;
-
--- Comparison operators on arrays
-SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest WHERE unnest.quantity > 2;
+WHERE unnest.product = 'Mouse';
 ```
 
-**Note:** The `DISTINCT` keyword is used to avoid duplicate `order_id` values when multiple array elements match the filter condition.
-
-**Filter Examples:**
-
-```sql
--- Simple equality filter
-SELECT * FROM users WHERE active = true;
--- MongoDB query: {active: true}
-
--- Range filter
-SELECT * FROM users WHERE age > 28 AND age < 40;
--- MongoDB query: {age: {$gt: 28, $lt: 40}}
-
--- IN filter
-SELECT * FROM users WHERE status IN ('active', 'pending');
--- MongoDB query: {status: {$in: ['active', 'pending']}}
-
--- NULL check
-SELECT * FROM users WHERE email IS NOT NULL;
--- MongoDB query: {email: {$ne: null}}
-
--- Nested field filter
-SELECT * FROM users WHERE address_city = 'New York';
--- MongoDB query: {'address.city': 'New York'}
-```
+> **Note:** When using `mongo_scan` directly, you can provide an optional `filter` parameter (e.g., `filter := '{"status": "active"}'`) for MongoDB-specific operators. If both WHERE clauses and `filter` are present, WHERE clauses take precedence.
 
 #### LIMIT Pushdown
 
-Constant LIMIT values are pushed down to MongoDB's `limit()` option, reducing data transfer for TOP N queries:
+LIMIT is pushed down when directly above the table scan (without ORDER BY, aggregations, or joins):
 
 ```sql
-SELECT * FROM orders ORDER BY total DESC LIMIT 10;
--- MongoDB query uses: .limit(10)
+SELECT * FROM orders LIMIT 10;
+-- MongoDB uses: .limit(10)
 ```
 
-**Limitation:** LIMIT pushdown only works when LIMIT is directly above the table scan. For queries with joins or aggregations before LIMIT, the limit is applied in DuckDB after processing.
+**Limitation:** When ORDER BY is present, DuckDB uses `TOP_N` which handles ordering in DuckDB, so LIMIT is not pushed down.
 
 #### Projection Pushdown
 
-Projection pushdown (fetching only selected columns) is not yet implemented. All columns are currently fetched from MongoDB, though this is planned for future optimization.
+Not yet implemented. All columns are currently fetched from MongoDB.
 
 ## Contributing
 
