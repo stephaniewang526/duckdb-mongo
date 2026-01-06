@@ -204,6 +204,10 @@ USE mongo_db;  -- Defaults to "mydb"
 
 ### Setting Up Test Data (For Examples)
 
+**Prerequisites:**
+- MongoDB instance running (e.g., `docker run -d -p 27017:27017 mongo` or local MongoDB installation)
+- `mongosh` installed
+
 To follow along with the examples in this README, you can create a test database with sample data:
 
 **Option 1: Use the test script (recommended)**
