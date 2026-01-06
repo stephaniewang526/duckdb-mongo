@@ -202,11 +202,49 @@ USE mongo_db;  -- Defaults to "mydb"
 
 ## Querying MongoDB
 
+### Setting Up Test Data (For Examples)
+
+To follow along with the examples in this README, you can create a test database with sample data:
+
+**Option 1: Use the test script (recommended)**
+
+```bash
+bash test/create-mongo-tables.sh
+```
+
+**Option 2: Manual setup with mongosh**
+
+```bash
+mongosh "mongodb://localhost:27017/duckdb_mongo_test" --eval "db.orders.insertMany([{order_id: 'ORD-001', items: [{product: 'Laptop', quantity: 1, price: 999.99}, {product: 'Mouse', quantity: 2, price: 29.99}], total: 1059.97, status: 'completed'}, {order_id: 'ORD-002', items: [{product: 'Desk', quantity: 1, price: 299.99}], total: 299.99, status: 'pending'}, {order_id: 'ORD-003', items: [], total: 0, status: 'cancelled'}, {order_id: 'ORD-004', items: [{product: 'Keyboard', quantity: 1}], total: 79.99, status: 'pending'}]);"
+```
+
+**Option 3: Interactive mongosh**
+
+```bash
+mongosh "mongodb://localhost:27017/duckdb_mongo_test"
+```
+
+Then paste:
+```javascript
+db.orders.insertMany([
+  { order_id: 'ORD-001', items: [{ product: 'Laptop', quantity: 1, price: 999.99 }, { product: 'Mouse', quantity: 2, price: 29.99 }], total: 1059.97, status: 'completed' },
+  { order_id: 'ORD-002', items: [{ product: 'Desk', quantity: 1, price: 299.99 }], total: 299.99, status: 'pending' },
+  { order_id: 'ORD-003', items: [], total: 0, status: 'cancelled' },
+  { order_id: 'ORD-004', items: [{ product: 'Keyboard', quantity: 1 }], total: 79.99, status: 'pending' }
+]);
+```
+
+After setting up test data, attach to the test database:
+
+```sql
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+```
+
 ### Basic Queries
 
 ```sql
--- Attach to MongoDB
-ATTACH 'host=localhost port=27017' AS mongo_db (TYPE MONGO);
+-- Attach to MongoDB (using test database from setup above)
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
 
 -- Show attached databases
 SHOW DATABASES;
@@ -215,11 +253,11 @@ SHOW DATABASES;
 │    varchar    │
 ├───────────────┤
 │ memory        │
-│ mongo_db      │
+│ mongo_test    │
 └───────────────┘
 
 -- List schemas (MongoDB databases) in the attached catalog
-SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'mongo_db' ORDER BY schema_name;
+SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'mongo_test' ORDER BY schema_name;
 ┌───────────────────┐
 │    schema_name    │
 │      varchar      │
@@ -229,7 +267,7 @@ SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'mongo_
 └───────────────────┘
 
 -- Select data from a specific collection
-SELECT order_id, status, total FROM mongo_db.duckdb_mongo_test.orders;
+SELECT order_id, status, total FROM mongo_test.duckdb_mongo_test.orders;
 ┌──────────┬───────────┬─────────┐
 │ order_id │  status   │  total  │
 │ varchar  │  varchar  │ double  │
@@ -241,7 +279,7 @@ SELECT order_id, status, total FROM mongo_db.duckdb_mongo_test.orders;
 └──────────┴───────────┴─────────┘
 
 -- Query arrays of objects using list_extract (1-based indexing)
-SELECT order_id, list_extract(items, 1).product AS product, list_extract(items, 1).price AS price FROM mongo_db.duckdb_mongo_test.orders;
+SELECT order_id, list_extract(items, 1).product AS product, list_extract(items, 1).price AS price FROM mongo_test.duckdb_mongo_test.orders;
 ┌──────────┬──────────┬────────┐
 │ order_id │ product  │ price  │
 │ varchar  │ varchar  │ double │
@@ -254,7 +292,7 @@ SELECT order_id, list_extract(items, 1).product AS product, list_extract(items, 
 
 -- Expand arrays into multiple rows using UNNEST
 SELECT order_id, UNNEST(items).product AS product, UNNEST(items).price AS price 
-FROM mongo_db.duckdb_mongo_test.orders 
+FROM mongo_test.duckdb_mongo_test.orders 
 WHERE order_id = 'ORD-001';
 ┌──────────┬──────────┬─────────┐
 │ order_id │ product  │  price  │
@@ -266,7 +304,7 @@ WHERE order_id = 'ORD-001';
 
 -- Query with aggregation
 SELECT status, COUNT(*) as count, SUM(total) as total_revenue 
-  FROM mongo_db.duckdb_mongo_test.orders 
+  FROM mongo_test.duckdb_mongo_test.orders 
   GROUP BY status
   ORDER BY status;
 ┌───────────┬───────┬───────────────┐
@@ -279,7 +317,7 @@ SELECT status, COUNT(*) as count, SUM(total) as total_revenue
 └───────────┴───────┴───────────────┘
 
 -- Filter on array element fields using UNNEST
-SELECT DISTINCT order_id FROM mongo_db.duckdb_mongo_test.orders, UNNEST(items) AS unnest 
+SELECT DISTINCT order_id FROM mongo_test.duckdb_mongo_test.orders, UNNEST(items) AS unnest 
 WHERE unnest.product = 'Mouse';
 ┌──────────┐
 │ order_id │
@@ -339,7 +377,12 @@ After clearing the cache, the next query will re-scan schemas and re-infer colle
 The extension automatically infers schemas by sampling documents (default: 100, configurable via `sample_size`):
 
 - **Nested Documents**: Flattened with underscore-separated names (e.g., `user_address_city`), up to 5 levels deep
-- **Type Conflicts**: Frequency-based resolution (VARCHAR if >70%, numeric if ≥30%, defaults to VARCHAR)
+- **Type Conflicts**: Frequency-based resolution:
+  - VARCHAR if >70% of values are strings
+  - DOUBLE if ≥30% are doubles (or any doubles present)
+  - BIGINT if ≥30% are integers (when no doubles)
+  - BOOLEAN/TIMESTAMP if ≥70% match
+  - Defaults to VARCHAR
 - **Missing Fields**: NULL values
 
 #### Array Handling
@@ -351,31 +394,13 @@ The extension automatically infers schemas by sampling documents (default: 100, 
   - Example: If `items[0]` has `{product, quantity}` and `items[5]` has `{product, quantity, discount}`, the `discount` field will be included in the STRUCT
   - Creates a LIST type containing a STRUCT with all discovered fields
   
-- **Querying Arrays:**
-  ```sql
-  -- Return full array
-  SELECT order_id, items FROM orders WHERE order_id = 'ORD-001';
-  -- Returns: [{'product': 'Laptop', 'quantity': 1, 'price': 999.99}, {'product': 'Mouse', 'quantity': 2, 'price': 29.99}]
-  
-  -- Access specific array element using list_extract (1-based indexing)
-  SELECT order_id, list_extract(items, 1).product AS product, list_extract(items, 1).price AS price FROM orders;
-  -- Returns: 'Laptop', 999.99 (from first element)
-  
-  SELECT order_id, list_extract(items, 2).product AS product, list_extract(items, 2).price AS price FROM orders;
-  -- Returns: 'Mouse', 29.99 (from second element)
-  
-  -- Expand array into multiple rows using UNNEST
-  SELECT order_id, UNNEST(items).product AS product, UNNEST(items).price AS price FROM orders;
-  -- Returns multiple rows, one per array element
-  ```
-  
-  > **Note:** For filtering on array elements, see the [Pushdown Strategy](#pushdown-strategy) section.
+- **Querying Arrays:** Use `list_extract()` to access specific elements (1-based indexing) or `UNNEST()` to expand arrays into multiple rows. See [Basic Queries](#basic-queries) for examples.
 
 **Arrays of Primitives:**
 - Arrays of primitives (strings, numbers) are stored as `LIST` types
 - Example: `tags: ['admin', 'user']` → `LIST(VARCHAR)` containing `['admin', 'user']`
 - Can be queried with list_extract (1-based indexing): `list_extract(tags, 1)` returns `'admin'`
-- Can be expanded with UNNEST: `SELECT UNNEST(tags) FROM users`
+- Can be expanded with UNNEST: `SELECT UNNEST(tags) FROM mongo_test.duckdb_mongo_test.users`
 
 **Arrays of Arrays:**
 - Arrays of arrays are stored as `LIST(LIST(...))` types
@@ -525,20 +550,17 @@ The extension provides **direct SQL access to MongoDB without exporting or copyi
 
 ### Pushdown Strategy
 
-The extension uses a selective pushdown strategy that leverages MongoDB's indexing capabilities while utilizing DuckDB's analytical strengths:
+The extension uses a selective pushdown strategy: **filter at MongoDB** (reduce data transfer), **analyze in DuckDB** (powerful SQL).
 
 **Pushed Down to MongoDB:**
-- **Filters (WHERE clauses)**: Automatically converted to MongoDB `$match` queries to leverage indexes
-- **LIMIT clauses**: When directly above table scan (without ORDER BY, aggregations, or joins)
+- WHERE clauses (automatic conversion to MongoDB `$match` queries)
+- LIMIT clauses (when directly above table scan)
+- Manual `filter` parameter (for MongoDB-specific operators like `$elemMatch`)
 
 **Kept in DuckDB:**
-- Aggregations (GROUP BY, COUNT, SUM, etc.)
-- Joins
-- Window functions (ROW_NUMBER, RANK, LAG, etc.)
-- Complex SQL features (CTEs, subqueries)
-- ORDER BY (uses DuckDB's `TOP_N` operator)
+- Aggregations, joins, window functions, CTEs, subqueries, ORDER BY
 
-#### Filter Pushdown
+#### Automatic Filter Pushdown
 
 WHERE clauses are automatically converted to MongoDB `$match` queries. Use `EXPLAIN` to see which operations are pushed down:
 
@@ -580,41 +602,33 @@ For aggregations, filters are pushed down while aggregation happens in DuckDB:
 **Examples:**
 
 ```sql
--- Equality
-SELECT * FROM users WHERE active = true;
--- MongoDB: {active: true}
+-- Equality (using test data)
+SELECT * FROM mongo_test.duckdb_mongo_test.orders WHERE status = 'completed';
+-- MongoDB: {status: 'completed'}
 
--- Range
-SELECT * FROM users WHERE age > 28 AND age < 40;
+-- Range (example with users collection)
+SELECT * FROM mongo_test.duckdb_mongo_test.users WHERE age > 28 AND age < 40;
 -- MongoDB: {age: {$gt: 28, $lt: 40}}
 
 -- IN
-SELECT * FROM users WHERE status IN ('active', 'pending');
--- MongoDB: {status: {$in: ['active', 'pending']}}
+SELECT * FROM mongo_test.duckdb_mongo_test.orders WHERE status IN ('completed', 'pending');
+-- MongoDB: {status: {$in: ['completed', 'pending']}}
 
--- Nested field
-SELECT * FROM users WHERE address_city = 'New York';
+-- Nested field (example with users collection)
+SELECT * FROM mongo_test.duckdb_mongo_test.users WHERE address_city = 'New York';
 -- MongoDB: {'address.city': 'New York'}
-```
-
-**Array Filtering:**
-
-To filter on array elements, use `UNNEST` to expand arrays first:
-
-```sql
--- Filter on array elements
-SELECT DISTINCT order_id FROM orders, UNNEST(items) AS unnest 
-WHERE unnest.product = 'Mouse';
 ```
 
 > **Note:** When using `mongo_scan` directly, you can provide an optional `filter` parameter (e.g., `filter := '{"status": "active"}'`) for MongoDB-specific operators. If both WHERE clauses and `filter` are present, WHERE clauses take precedence.
 
+> **Note:** Filters on array elements (using `UNNEST`) are **not** pushed down to MongoDB—they are applied in DuckDB after expanding arrays. This means **all documents** are fetched from MongoDB, then filtered in DuckDB. For large collections, consider using MongoDB's `$elemMatch` operator via the `filter` parameter in `mongo_scan` to filter at the database level. See [Basic Queries](#basic-queries) for array filtering examples.
+
 #### LIMIT Pushdown
 
-LIMIT is pushed down when directly above the table scan (without ORDER BY, aggregations, or joins):
+LIMIT is automatically pushed down when directly above the table scan (without ORDER BY, aggregations, or joins):
 
 ```sql
-SELECT * FROM orders LIMIT 10;
+SELECT * FROM mongo_test.duckdb_mongo_test.orders LIMIT 10;
 -- MongoDB uses: .limit(10)
 ```
 
