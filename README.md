@@ -675,3 +675,7 @@ Contributions are welcome! Please open an issue or submit a pull request.
 ## License
 
 See LICENSE file for details.
+
+### Third-Party Licenses
+
+This project uses the MongoDB C++ Driver (mongocxx and bsoncxx), which is licensed under the Apache License, Version 2.0. See the NOTICE file for third-party license information and attributions.

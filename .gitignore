@@ -26,3 +26,4 @@ Dockerfile.local-ci
 test-ci-local.sh
 scripts/ci-test.sh
 scripts/setup-vcpkg.sh
+test/local/
