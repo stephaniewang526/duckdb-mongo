@@ -862,7 +862,6 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 		std::string segment;
 		bsoncxx::document::view current = doc;
 		bsoncxx::document::element result;
-		bool found = false;
 
 		while (std::getline(iss, segment, '_')) {
 			auto element = current[segment];
@@ -871,15 +870,24 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			}
 			result = element;
 			if (result.type() == bsoncxx::type::k_document) {
+				// Continue navigating deeper into nested document
 				current = result.get_document().value;
-				found = true;
 			} else {
-				found = true;
-				break;
+				// Found a scalar or array - this should be the final element
+				// Verify result is valid before returning
+				if (result) {
+					return result;
+				}
+				return bsoncxx::document::element {};
 			}
 		}
 
-		return found ? result : bsoncxx::document::element {};
+		// If we get here, we've processed all segments
+		// Verify result is valid before returning
+		if (result) {
+			return result;
+		}
+		return bsoncxx::document::element {};
 	};
 
 	auto getArrayByPath = [&](const std::string &path) -> bsoncxx::array::view {

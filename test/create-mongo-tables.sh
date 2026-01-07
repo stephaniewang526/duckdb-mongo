@@ -226,6 +226,60 @@ db.deeply_nested.insertMany([
   }
 ]);
 
+// Create collection with nested object scalar fields
+db.nested_scalars_test.insertMany([
+  {
+    name: 'Document1',
+    Parent: {
+      Object: {
+        Child: {
+          String: 'test_value',
+          Int: 42,
+          Bool: true,
+          Date: new Date('2023-01-01T00:00:00Z')
+        }
+      }
+    }
+  },
+  {
+    name: 'Document2',
+    Level1: {
+      Level2: {
+        Level3: {
+          Value: 'nested_value',
+          Number: 100
+        }
+      }
+    }
+  },
+  {
+    name: 'Document3',
+    Parent: {
+      Object: {
+        Child: {
+          String: 'another_value',
+          Int: 100,
+          Bool: false,
+          Date: new Date('2023-02-01T00:00:00Z'),
+          OptionalField: 'optional_value'
+        }
+      }
+    }
+  },
+  {
+    name: 'Document4',
+    Parent: {
+      Object: {
+        Child: {
+          String: null,
+          Int: 0,
+          Bool: false
+        }
+      }
+    }
+  }
+]);
+
 print('Test database created successfully!');
 print('Database: ' + db.getName());
 print('Collections: ' + db.getCollectionNames().join(', '));
@@ -233,7 +287,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested"
+echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test"
 echo ""
 
 # Export environment variables for tests

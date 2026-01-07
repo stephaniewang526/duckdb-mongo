@@ -45,7 +45,7 @@ SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo' 
   AND table_schema = 'duckdb_mongo_test';
 ----
-7
+8
 
 # Query collections again - should use cached data
 query I
@@ -53,7 +53,7 @@ SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo' 
   AND table_schema = 'duckdb_mongo_test';
 ----
-7
+8
 
 # Get list of collections (this uses cached collection names)
 query T
@@ -65,6 +65,7 @@ ORDER BY table_name;
 deeply_nested
 empty_collection
 matrix
+nested_scalars_test
 orders
 products
 type_conflicts
@@ -84,7 +85,7 @@ SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo' 
   AND table_schema = 'duckdb_mongo_test';
 ----
-7
+8
 
 # Verify we get the same collections (proving fresh data was fetched, not stale cache)
 query T
@@ -96,6 +97,7 @@ ORDER BY table_name;
 deeply_nested
 empty_collection
 matrix
+nested_scalars_test
 orders
 products
 type_conflicts

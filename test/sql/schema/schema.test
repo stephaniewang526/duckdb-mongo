@@ -72,6 +72,43 @@ SELECT name, specs_material, specs_dimensions_width FROM mongo_test.products WHE
 ----
 Desk	Wood	120
 
+# Test nested object scalar fields
+query III
+SELECT Parent_Object_Child_String, Parent_Object_Child_Int, Parent_Object_Child_Date 
+FROM mongo_test.nested_scalars_test 
+WHERE Parent_Object_Child_String IS NOT NULL
+ORDER BY Parent_Object_Child_String;
+----
+another_value	100	2023-02-01
+test_value	42	2023-01-01
+
+# Test nested object fields with different scalar types
+query IIII
+SELECT name, Parent_Object_Child_String, Parent_Object_Child_Int, Parent_Object_Child_Bool 
+FROM mongo_test.nested_scalars_test 
+WHERE name = 'Document1';
+----
+Document1	test_value	42	true
+
+# Test deeply nested scalar fields (3+ levels)
+query III
+SELECT name, Level1_Level2_Level3_Value, Level1_Level2_Level3_Number 
+FROM mongo_test.nested_scalars_test 
+WHERE name = 'Document2';
+----
+Document2	nested_value	100
+
+# Test that NULL nested fields return NULL correctly
+query III
+SELECT name, Parent_Object_Child_String, Parent_Object_Child_OptionalField 
+FROM mongo_test.nested_scalars_test 
+WHERE name IN ('Document1', 'Document3', 'Document4')
+ORDER BY name;
+----
+Document1	test_value	NULL
+Document3	another_value	optional_value
+Document4	NULL	NULL
+
 # Test deeply nested collection (6 levels - stored as JSON at level 5 due to MAX_DEPTH=5)
 # Documents deeper than 5 levels are stored as JSON/VARCHAR at the 5th level
 query I
