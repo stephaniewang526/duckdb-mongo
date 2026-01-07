@@ -60,6 +60,12 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 		string username = params.count("user") ? params["user"] : "";
 		string password = params.count("password") ? params["password"] : "";
 		string auth_source = params.count("authsource") ? params["authsource"] : "";
+		string tls = params.count("tls") ? params["tls"] : "";
+		string ssl = params.count("ssl") ? params["ssl"] : "";
+		string tlsCAFile = params.count("tls_ca_file") ? params["tls_ca_file"] : "";
+		string tlsAllowInvalidCertificates = params.count("tls_allow_invalid_certificates")
+		                                         ? params["tls_allow_invalid_certificates"]
+		                                         : "";
 
 		// Check if using SRV connection (for MongoDB Atlas).
 		bool use_srv = false;
@@ -92,10 +98,30 @@ unique_ptr<Catalog> MongoStorageAttach(optional_ptr<StorageExtensionInfo> storag
 		if (!auth_source.empty()) {
 			query_params.push_back("authSource=" + auth_source);
 		}
-		// Add common Atlas options when using SRV.
 		if (use_srv) {
 			query_params.push_back("retryWrites=true");
 			query_params.push_back("w=majority");
+		}
+		if (!tls.empty()) {
+			string tls_lower = StringUtil::Lower(tls);
+			if (tls_lower == "true" || tls_lower == "1" || tls_lower == "yes") {
+				query_params.push_back("tls=true");
+			}
+		} else if (!ssl.empty()) {
+			string ssl_lower = StringUtil::Lower(ssl);
+			if (ssl_lower == "true" || ssl_lower == "1" || ssl_lower == "yes") {
+				query_params.push_back("tls=true");
+			}
+		}
+		if (!tlsCAFile.empty()) {
+			query_params.push_back("tlsCAFile=" + tlsCAFile);
+		}
+		if (!tlsAllowInvalidCertificates.empty()) {
+			string tls_allow_invalid_lower = StringUtil::Lower(tlsAllowInvalidCertificates);
+			if (tls_allow_invalid_lower == "true" || tls_allow_invalid_lower == "1" ||
+			    tls_allow_invalid_lower == "yes") {
+				query_params.push_back("tlsAllowInvalidCertificates=true");
+			}
 		}
 		// Add any additional options from the options parameter.
 		if (params.count("options")) {

@@ -46,3 +46,31 @@ ATTACH 'mongodb://localhost:27017' AS mongo6;
 ----
 Cannot open file
 
+# TLS/SSL connection parameters
+statement ok
+ATTACH 'host=localhost port=27017 tls=true' AS mongo_tls1 (TYPE MONGO);
+
+statement ok
+DETACH mongo_tls1;
+
+# TLS connection with SSL alias
+statement ok
+ATTACH 'host=localhost port=27017 ssl=true' AS mongo_tls2 (TYPE MONGO);
+
+statement ok
+DETACH mongo_tls2;
+
+# TLS connection with CA certificate file
+statement ok
+ATTACH 'host=localhost port=27017 tls=true tls_ca_file=/path/to/global_bundle.pem' AS mongo_tls3 (TYPE MONGO);
+
+statement ok
+DETACH mongo_tls3;
+
+# TLS connection with MongoDB URI format
+statement ok
+ATTACH 'mongodb://user:pass@localhost:27017/mydb?tls=true&tlsCAFile=/path/to/global_bundle.pem' AS mongo_tls4 (TYPE MONGO);
+
+statement ok
+DETACH mongo_tls4;
+

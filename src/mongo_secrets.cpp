@@ -30,6 +30,13 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 	string authsource =
 	    kv_secret.TryGetValue("authsource").IsNull() ? "" : kv_secret.TryGetValue("authsource").ToString();
 	string srv = kv_secret.TryGetValue("srv").IsNull() ? "" : kv_secret.TryGetValue("srv").ToString();
+	string tls = kv_secret.TryGetValue("tls").IsNull() ? "" : kv_secret.TryGetValue("tls").ToString();
+	string ssl = kv_secret.TryGetValue("ssl").IsNull() ? "" : kv_secret.TryGetValue("ssl").ToString();
+	string tlsCAFile = kv_secret.TryGetValue("tlsCAFile").IsNull() ? "" : kv_secret.TryGetValue("tlsCAFile").ToString();
+	string tlsAllowInvalidCertificates =
+	    kv_secret.TryGetValue("tlsAllowInvalidCertificates").IsNull() ? ""
+	                                                                  : kv_secret.TryGetValue("tlsAllowInvalidCertificates")
+	                                                                        .ToString();
 
 	// Check if using SRV connection (for MongoDB Atlas)
 	bool use_srv = false;
@@ -64,10 +71,30 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 	if (!authsource.empty()) {
 		query_params.push_back("authSource=" + authsource);
 	}
-	// Add common Atlas options when using SRV
 	if (use_srv) {
 		query_params.push_back("retryWrites=true");
 		query_params.push_back("w=majority");
+	}
+	if (!tls.empty()) {
+		string tls_lower = StringUtil::Lower(tls);
+		if (tls_lower == "true" || tls_lower == "1" || tls_lower == "yes") {
+			query_params.push_back("tls=true");
+		}
+	} else if (!ssl.empty()) {
+		string ssl_lower = StringUtil::Lower(ssl);
+		if (ssl_lower == "true" || ssl_lower == "1" || ssl_lower == "yes") {
+			query_params.push_back("tls=true");
+		}
+	}
+	if (!tlsCAFile.empty()) {
+		query_params.push_back("tlsCAFile=" + tlsCAFile);
+	}
+	if (!tlsAllowInvalidCertificates.empty()) {
+		string tls_allow_invalid_lower = StringUtil::Lower(tlsAllowInvalidCertificates);
+		if (tls_allow_invalid_lower == "true" || tls_allow_invalid_lower == "1" ||
+		    tls_allow_invalid_lower == "yes") {
+			query_params.push_back("tlsAllowInvalidCertificates=true");
+		}
 	}
 
 	// If attach_path is a MongoDB URI, merge additional options from it
@@ -137,6 +164,14 @@ unique_ptr<BaseSecret> CreateMongoSecretFunction(ClientContext &context, CreateS
 			result->secret_map["authsource"] = named_param.second.ToString();
 		} else if (lower_name == "srv") {
 			result->secret_map["srv"] = named_param.second.ToString();
+		} else if (lower_name == "tls") {
+			result->secret_map["tls"] = named_param.second.ToString();
+		} else if (lower_name == "ssl") {
+			result->secret_map["ssl"] = named_param.second.ToString();
+		} else if (lower_name == "tls_ca_file") {
+			result->secret_map["tlsCAFile"] = named_param.second.ToString();
+		} else if (lower_name == "tls_allow_invalid_certificates") {
+			result->secret_map["tlsAllowInvalidCertificates"] = named_param.second.ToString();
 		} else {
 			throw InternalException("Unknown named parameter passed to CreateMongoSecretFunction: " + lower_name);
 		}
@@ -157,6 +192,10 @@ void SetMongoSecretParameters(CreateSecretFunction &function) {
 	function.named_parameters["dbname"] = LogicalType::VARCHAR; // alias
 	function.named_parameters["authsource"] = LogicalType::VARCHAR;
 	function.named_parameters["srv"] = LogicalType::VARCHAR;
+	function.named_parameters["tls"] = LogicalType::VARCHAR;
+	function.named_parameters["ssl"] = LogicalType::VARCHAR;
+	function.named_parameters["tls_ca_file"] = LogicalType::VARCHAR;
+	function.named_parameters["tls_allow_invalid_certificates"] = LogicalType::VARCHAR;
 }
 
 } // namespace duckdb

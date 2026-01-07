@@ -37,6 +37,7 @@ SELECT * FROM atlas_db.mydb.mycollection;
 
 - Direct SQL queries over MongoDB collections (no ETL/export)
 - **MongoDB Atlas support** via connection strings or DuckDB Secrets
+- **TLS/SSL encryption** for secure connections
 - Automatic schema inference (samples 100 documents by default)
 - Nested document flattening with underscore-separated names
 - BSON type mapping to DuckDB SQL types
@@ -144,9 +145,40 @@ ATTACH 'mongodb://user:pass@localhost:27017/mydb' AS mongo_db (TYPE MONGO);
 | `dbname` / `database` | Specific MongoDB database to connect to | - | Both 1 and 2 |
 | `authsource` | Authentication database | - | Both 1 and 2 |
 | `srv` | Use SRV connection format (for MongoDB Atlas) | `false` | Both 1 and 2 |
+| `tls` / `ssl` | Enable TLS/SSL encryption | `false` | Both 1 and 2 |
+| `tls_ca_file` | Path to CA certificate file | - | Both 1 and 2 |
+| `tls_allow_invalid_certificates` | Allow invalid certificates (for testing only) | `false` | Both 1 and 2 |
 | `options` | Additional MongoDB connection string query parameters | - | Format 1 only |
 
 > **Tip:** For replica sets (including MongoDB Atlas), use `readPreference=secondaryPreferred` to route reads to secondaries.
+
+### TLS/SSL Connections
+
+The extension supports TLS/SSL encrypted connections for secure MongoDB access. Enable TLS by setting `tls=true` or `ssl=true`:
+
+```sql
+-- Basic TLS connection
+ATTACH 'host=mongodb.example.com port=27017 user=myuser password=mypass tls=true' AS mongo_secure (TYPE MONGO);
+
+-- TLS with custom CA certificate file
+ATTACH 'host=mongodb.example.com port=27017 user=myuser password=mypass tls=true tls_ca_file=/path/to/ca.pem' AS mongo_secure (TYPE MONGO);
+```
+
+**Using Secrets with TLS:**
+
+```sql
+CREATE SECRET mongo_tls_secret (
+    TYPE mongo,
+    HOST 'mongodb.example.com',
+    PORT '27017',
+    USER 'myuser',
+    PASSWORD 'mypass',
+    TLS 'true',
+    TLS_CA_FILE '/path/to/ca.pem'
+);
+
+ATTACH 'dbname=mydb' AS mongo_secure (TYPE mongo, SECRET 'mongo_tls_secret');
+```
 
 ### Using DuckDB Secrets
 
