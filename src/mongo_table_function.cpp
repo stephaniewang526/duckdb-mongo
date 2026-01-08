@@ -1317,6 +1317,9 @@ bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &filter, c
 	}
 	case TableFilterType::IN_FILTER: {
 		const auto &in_filter = filter.Cast<InFilter>();
+		if (in_filter.values.empty()) {
+			break;
+		}
 		bsoncxx::builder::basic::array in_array;
 		for (const auto &val : in_filter.values) {
 			AppendValueToArray(in_array, val, column_type);
@@ -1387,13 +1390,22 @@ bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &filter, c
 			in_doc.append(bsoncxx::builder::basic::kvp("$in", in_array.extract()));
 			doc.append(bsoncxx::builder::basic::kvp(column_name, in_doc.extract()));
 		} else {
-			// For complex OR filters, use $or at top level
+			if (conj_filter.child_filters.empty()) {
+				break;
+			}
 			bsoncxx::builder::basic::array or_array;
+			int appended_count = 0;
 			for (const auto &child_filter : conj_filter.child_filters) {
 				auto child_doc = ConvertSingleFilterToMongo(*child_filter, column_name, column_type);
-				or_array.append(child_doc.view());
+				// Only append non-empty documents to avoid BSON validation warnings
+				if (!child_doc.view().empty()) {
+					or_array.append(child_doc.view());
+					appended_count++;
+				}
 			}
-			doc.append(bsoncxx::builder::basic::kvp("$or", or_array.extract()));
+			if (appended_count > 0) {
+				doc.append(bsoncxx::builder::basic::kvp("$or", or_array.extract()));
+			}
 		}
 		break;
 	}
