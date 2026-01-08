@@ -722,7 +722,8 @@ Value BSONArrayToList(const bsoncxx::array::view &array, const LogicalType &list
 
 void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &prefix, int depth,
                        std::unordered_map<std::string, vector<LogicalType>> &field_types,
-                       std::unordered_map<std::string, std::string> &flattened_to_mongo_path) {
+                       std::unordered_map<std::string, std::string> &flattened_to_mongo_path,
+                       const std::string &mongo_prefix = "") {
 	const int MAX_DEPTH = 5;
 
 	if (depth > MAX_DEPTH) {
@@ -737,14 +738,14 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 		std::string field_name = std::string(element.key().data(), element.key().length());
 		std::string full_path = prefix.empty() ? field_name : prefix + "_" + field_name;
 		// Track original MongoDB path: use dots for nested fields, original name for top-level
-		std::string mongo_path = prefix.empty() ? field_name : prefix + "." + field_name;
+		std::string mongo_path = mongo_prefix.empty() ? field_name : mongo_prefix + "." + field_name;
 		flattened_to_mongo_path[full_path] = mongo_path;
 
 		switch (element.type()) {
 		case bsoncxx::type::k_document: {
 			// Recursively process nested document
 			auto nested_doc = element.get_document().value;
-			CollectFieldPaths(nested_doc, full_path, depth + 1, field_types, flattened_to_mongo_path);
+			CollectFieldPaths(nested_doc, full_path, depth + 1, field_types, flattened_to_mongo_path, mongo_path);
 			// Don't store the document itself as JSON when we have nested fields
 			// This prevents VARCHAR from overriding nested STRUCT types
 			break;
@@ -813,7 +814,7 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 
 	int64_t count = 0;
 	for (const auto &doc : cursor) {
-		CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path);
+		CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "");
 		count++;
 		if (count >= sample_size) {
 			break;
@@ -852,39 +853,139 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 }
 
 void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &column_names,
-                     const vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx) {
-	// Helper to get element from document by path (handles nested fields with _ separator)
-	auto getElementByPath = [&](const std::string &path) -> bsoncxx::document::element {
-		std::istringstream iss(path);
+                     const vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
+                     const unordered_map<string, string> &column_name_to_mongo_path) {
+	// Helper to get element from document by MongoDB path (uses dot notation)
+	auto getElementByMongoPath = [&](const std::string &mongo_path) -> bsoncxx::document::element {
+		std::vector<std::string> segments;
+		std::istringstream iss(mongo_path);
 		std::string segment;
+		
+		// Split by dots
+		while (std::getline(iss, segment, '.')) {
+			segments.push_back(segment);
+		}
+		
+		if (segments.empty()) {
+			return bsoncxx::document::element {};
+		}
+		
 		bsoncxx::document::view current = doc;
 		bsoncxx::document::element result;
-
-		while (std::getline(iss, segment, '_')) {
-			auto element = current[segment];
+		
+		// Navigate through segments
+		for (size_t i = 0; i < segments.size(); i++) {
+			const std::string &seg = segments[i];
+			auto element = current[seg];
 			if (!element) {
 				return bsoncxx::document::element {};
 			}
 			result = element;
-			if (result.type() == bsoncxx::type::k_document) {
-				// Continue navigating deeper into nested document
+			
+			// If this is not the last segment, it must be a document
+			if (i < segments.size() - 1) {
+				if (result.type() != bsoncxx::type::k_document) {
+					// Path is invalid - non-document in the middle
+					return bsoncxx::document::element {};
+				}
 				current = result.get_document().value;
 			} else {
-				// Found a scalar or array - this should be the final element
-				// Verify result is valid before returning
-				if (result) {
-					return result;
-				}
-				return bsoncxx::document::element {};
+				// Last segment - return the element (even if null)
+				return result;
 			}
 		}
+		
+		// Should never reach here, but return result if we do
+		return result;
+	};
 
-		// If we get here, we've processed all segments
-		// Verify result is valid before returning
-		if (result) {
-			return result;
+	// Helper to get element from document by path (handles nested fields with _ separator)
+	// This is a fallback for when MongoDB path is not available
+	auto getElementByPath = [&](const std::string &path) -> bsoncxx::document::element {
+		std::vector<std::string> segments;
+		std::istringstream iss(path);
+		std::string segment;
+		
+		// First, collect all segments
+		while (std::getline(iss, segment, '_')) {
+			segments.push_back(segment);
 		}
-		return bsoncxx::document::element {};
+		
+		if (segments.empty()) {
+			return bsoncxx::document::element {};
+		}
+		
+		bsoncxx::document::view current = doc;
+		bsoncxx::document::element result;
+		
+		// Navigate through segments
+		for (size_t i = 0; i < segments.size(); i++) {
+			const std::string &seg = segments[i];
+			auto element = current[seg];
+			if (!element) {
+				return bsoncxx::document::element {};
+			}
+			result = element;
+			
+			// If this is not the last segment, it must be a document
+			if (i < segments.size() - 1) {
+				if (result.type() != bsoncxx::type::k_document) {
+					// Path is invalid - non-document in the middle
+					return bsoncxx::document::element {};
+				}
+				current = result.get_document().value;
+			} else {
+				// Last segment - return the element (even if null)
+				return result;
+			}
+		}
+		
+		// Should never reach here, but return result if we do
+		return result;
+	};
+
+	auto getArrayByMongoPath = [&](const std::string &mongo_path) -> bsoncxx::array::view {
+		std::vector<std::string> segments;
+		std::istringstream iss(mongo_path);
+		std::string segment;
+		
+		// Split by dots (MongoDB path notation)
+		while (std::getline(iss, segment, '.')) {
+			segments.push_back(segment);
+		}
+		
+		if (segments.empty()) {
+			return bsoncxx::array::view {};
+		}
+		
+		bsoncxx::document::view current = doc;
+		bsoncxx::document::element result;
+		
+		// Navigate through segments
+		for (size_t i = 0; i < segments.size(); i++) {
+			const std::string &seg = segments[i];
+			auto element = current[seg];
+			if (!element) {
+				return bsoncxx::array::view {};
+			}
+			result = element;
+			
+			// If this is not the last segment, it must be a document
+			if (i < segments.size() - 1) {
+				if (result.type() != bsoncxx::type::k_document) {
+					return bsoncxx::array::view {};
+				}
+				current = result.get_document().value;
+			} else {
+				// Last segment - check if it's an array
+				if (result.type() == bsoncxx::type::k_array) {
+					return result.get_array().value;
+				}
+				return bsoncxx::array::view {};
+			}
+		}
+		
+		return bsoncxx::array::view {};
 	};
 
 	auto getArrayByPath = [&](const std::string &path) -> bsoncxx::array::view {
@@ -925,7 +1026,15 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			if (element && element.type() == bsoncxx::type::k_array) {
 				array_view = element.get_array().value;
 			} else {
-				array_view = getArrayByPath(column_name);
+				// Try MongoDB path-based lookup for nested fields
+				auto path_it = column_name_to_mongo_path.find(column_name);
+				if (path_it != column_name_to_mongo_path.end()) {
+					// Use MongoDB dot-notation path
+					array_view = getArrayByMongoPath(path_it->second);
+				} else {
+					// Fallback to underscore-based path splitting
+					array_view = getArrayByPath(column_name);
+				}
 			}
 
 			auto &vec = output.data[col_idx];
@@ -967,9 +1076,23 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			if (element && element.type() == bsoncxx::type::k_document) {
 				struct_doc = element.get_document().value;
 			} else {
-				Value null_struct = Value(column_type);
-				vec.SetValue(row_idx, null_struct);
-				continue;
+				// Try MongoDB path-based lookup for nested fields
+				auto path_it = column_name_to_mongo_path.find(column_name);
+				if (path_it != column_name_to_mongo_path.end()) {
+					// Use MongoDB dot-notation path
+					element = getElementByMongoPath(path_it->second);
+					if (element && element.type() == bsoncxx::type::k_document) {
+						struct_doc = element.get_document().value;
+					} else {
+						Value null_struct = Value(column_type);
+						vec.SetValue(row_idx, null_struct);
+						continue;
+					}
+				} else {
+					Value null_struct = Value(column_type);
+					vec.SetValue(row_idx, null_struct);
+					continue;
+				}
 			}
 
 			Value struct_value = BSONDocumentToStruct(struct_doc, column_type);
@@ -990,8 +1113,15 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 		auto element = doc[column_name];
 
 		if (!element) {
-			// Try path-based lookup for nested fields
-			element = getElementByPath(column_name);
+			// Try MongoDB path-based lookup for nested fields
+			auto path_it = column_name_to_mongo_path.find(column_name);
+			if (path_it != column_name_to_mongo_path.end()) {
+				// Use MongoDB dot-notation path
+				element = getElementByMongoPath(path_it->second);
+			} else {
+				// Fallback to underscore-based path splitting
+				element = getElementByPath(column_name);
+			}
 		}
 
 		if (!element || element.type() == bsoncxx::type::k_null) {
@@ -1648,7 +1778,8 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 
 	while (count < max_count && *state.current != *state.end) {
 		auto doc = **state.current;
-		FlattenDocument(doc, bind_data.column_names, bind_data.column_types, output, count);
+		FlattenDocument(doc, bind_data.column_names, bind_data.column_types, output, count,
+		                bind_data.column_name_to_mongo_path);
 		++(*state.current);
 		count++;
 	}

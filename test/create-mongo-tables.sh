@@ -280,6 +280,53 @@ db.nested_scalars_test.insertMany([
   }
 ]);
 
+// Create collection with object container test data
+db.object_container_test.insertMany([
+  {
+    _id: ObjectId('679254416e8cf0c3b95a3954'),
+    case_id: 'Task-000000-00000',
+    case_type: 'bulk',
+    referrence_id: null,
+    request_type: {
+      doc_id: null,
+      document_type: null
+    },
+    case_data: {
+      argyle_ref_id: '67925122ce9bc35b1fc9a268',
+      argyle_case_id: '67925121265c4cf36d72f6e2',
+      tkient_code: 'dummy',
+      tkient_id: 0,
+      status: 'completed-success',
+      client_code: 'TEST001',
+      client_id: '12345',
+      unprocessed_case_data: {
+        fruit_number: '00000',
+        bird_basket: 'lorem',
+        pratfall_id: 'ipsum'
+      },
+      case_metadata: {
+        case_count: 0,
+        argyled_flag: 'lorem',
+        input_file_name: 'lorem'
+      }
+    },
+    channel_meta_data: {
+      channel_id: ObjectId('65cf0c5b48c8eef529c7d45e'),
+      channel_name: 'null',
+      emderpl_id: null
+    }
+  },
+  {
+    _id: ObjectId('679254416e8cf0c3b95a3955'),
+    case_id: 'Task-409997-94913',
+    case_type: 'bulk',
+    case_data: {
+      client_code: 'mrc',
+      client_id: 12322
+    }
+  }
+]);
+
 print('Test database created successfully!');
 print('Database: ' + db.getName());
 print('Collections: ' + db.getCollectionNames().join(', '));
@@ -287,7 +334,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test"
+echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test"
 echo ""
 
 # Export environment variables for tests

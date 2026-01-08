@@ -61,14 +61,16 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 
 void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &prefix, int depth,
                        std::unordered_map<std::string, std::vector<LogicalType>> &field_types,
-                       std::unordered_map<std::string, std::string> &flattened_to_mongo_path);
+                       std::unordered_map<std::string, std::string> &flattened_to_mongo_path,
+                       const std::string &mongo_prefix = "");
 
 LogicalType InferTypeFromBSON(const bsoncxx::document::element &element);
 
 LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types);
 
 void FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
-                     const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx);
+                     const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
+                     const std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
 
 // Filter pushdown functions
 bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,

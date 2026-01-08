@@ -1,0 +1,67 @@
+# name: test/sql/schema/object_container_inference.test
+# description: Test that object container sub-fields are correctly extracted (not returned as NULL)
+# group: [schema]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# Test that nested object fields with null values are correctly handled
+query III
+SELECT request_type_doc_id, request_type_document_type, case_id 
+FROM mongo_test.object_container_test 
+WHERE case_id = 'Task-000000-00000';
+----
+NULL	NULL	Task-000000-00000
+
+# Test that nested object fields in case_data with actual data are correctly extracted
+query III
+SELECT case_data_argyle_ref_id, case_data_tkient_code, case_data_status 
+FROM mongo_test.object_container_test 
+WHERE case_id = 'Task-000000-00000';
+----
+67925122ce9bc35b1fc9a268	dummy	completed-success
+
+# Test nested object in channel_meta_data
+query II
+SELECT channel_meta_data_channel_id, channel_meta_data_channel_name 
+FROM mongo_test.object_container_test 
+WHERE case_id = 'Task-000000-00000';
+----
+65cf0c5b48c8eef529c7d45e	null
+
+# Test deeply nested fields in case_data (3 levels deep)
+query III
+SELECT case_data_unprocessed_case_data_fruit_number, 
+       case_data_unprocessed_case_data_bird_basket,
+       case_data_unprocessed_case_data_pratfall_id
+FROM mongo_test.object_container_test 
+WHERE case_id = 'Task-000000-00000';
+----
+00000	lorem	ipsum
+
+# Test nested fields in case_metadata (3 levels deep)
+query III
+SELECT case_data_case_metadata_case_count, 
+       case_data_case_metadata_argyled_flag,
+       case_data_case_metadata_input_file_name
+FROM mongo_test.object_container_test 
+WHERE case_id = 'Task-000000-00000';
+----
+0	lorem	lorem
+
+# Test case_data_client_code and case_data_client_id fields
+# This verifies that nested object fields with actual values are correctly extracted (not NULL)
+query III
+SELECT case_id, case_data_client_code, case_data_client_id
+FROM mongo_test.object_container_test 
+WHERE case_id = 'Task-409997-94913'
+LIMIT 1;
+----
+Task-409997-94913	mrc	12322
+
+statement ok
+DETACH mongo_test;
