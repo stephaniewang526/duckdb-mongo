@@ -1823,8 +1823,6 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	auto collection = db[result->collection_name];
 
 	// Build query from pushed-down filters
-	// IMPORTANT: Filter column indices are relative to input.column_ids, not the full schema!
-	// We need to map filter indices to actual schema column indices
 	bsoncxx::document::view_or_value query_filter;
 	if (input.filters) {
 		// Map filter column indices from column_ids space to schema space
