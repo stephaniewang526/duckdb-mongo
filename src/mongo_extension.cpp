@@ -30,6 +30,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Enable filter pushdown
 	mongo_scan.filter_pushdown = true;
+	// Enable projection pushdown
+	mongo_scan.projection_pushdown = true;
 
 	// Create TableFunctionInfo with description and comment
 	TableFunctionSet mongo_scan_set("mongo_scan");
