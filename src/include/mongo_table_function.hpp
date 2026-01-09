@@ -56,7 +56,7 @@ struct MongoScanState : public LocalTableFunctionState {
 	// Keep projection document alive for the lifetime of the cursor
 	bsoncxx::document::value projection_document;
 
-	MongoScanState() : limit(-1), finished(false), projection_document(bsoncxx::builder::basic::document{}.extract()) {
+	MongoScanState() : limit(-1), finished(false), projection_document(bsoncxx::builder::basic::document {}.extract()) {
 	}
 };
 
@@ -80,8 +80,8 @@ void FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::
 
 // Projection pushdown function
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
-                                               const vector<string> &all_column_names,
-                                               const unordered_map<string, string> &column_name_to_mongo_path);
+                                              const vector<string> &all_column_names,
+                                              const unordered_map<string, string> &column_name_to_mongo_path);
 
 // Filter pushdown functions
 bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,

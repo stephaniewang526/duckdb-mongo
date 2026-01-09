@@ -856,12 +856,6 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &column_names,
                      const vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const unordered_map<string, string> &column_name_to_mongo_path) {
-	// Debug logging for first row
-	static bool first_row_logged = false;
-	if (row_idx == 0 && column_names.size() > 0) {
-		first_row_logged = false; // Reset for each document scan
-	}
-	
 	// Helper to get element from document by MongoDB path (uses dot notation)
 	auto getElementByMongoPath = [&](const std::string &mongo_path) -> bsoncxx::document::element {
 		std::vector<std::string> segments;
@@ -1689,8 +1683,8 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 }
 
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
-                                               const vector<string> &all_column_names,
-                                               const unordered_map<string, string> &column_name_to_mongo_path) {
+                                              const vector<string> &all_column_names,
+                                              const unordered_map<string, string> &column_name_to_mongo_path) {
 	bsoncxx::builder::basic::document projection_builder;
 
 	// Use a set to track which fields we've already added (avoid duplicates)
@@ -1709,7 +1703,7 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 		}
 
 		const string &column_name = all_column_names[col_idx];
-		
+
 		// Get MongoDB path for this column
 		string mongo_path;
 		auto path_it = column_name_to_mongo_path.find(column_name);
@@ -1761,7 +1755,7 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 
 	// If we have no real fields, return empty document (no projection = return all fields)
 	if (added_fields.empty()) {
-		return bsoncxx::builder::basic::document{}.extract();
+		return bsoncxx::builder::basic::document {}.extract();
 	}
 
 	// Include _id if it wasn't already included (MongoDB typically includes _id by default)
@@ -1778,7 +1772,6 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	const auto &data = dynamic_cast<const MongoScanData &>(*input.bind_data);
 	auto result = make_uniq<MongoScanState>();
 
-
 	// Store connection info in state
 	result->connection = data.connection;
 	result->database_name = data.database_name;
@@ -1787,14 +1780,14 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 
 	// Projection pushdown: collect columns needed (selected + filter columns)
 	unordered_set<idx_t> needed_column_indices;
-	
+
 	// Add selected columns
 	for (column_t col_id : input.column_ids) {
 		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
 			needed_column_indices.insert(col_id);
 		}
 	}
-	
+
 	// Add filter columns (if filters exist and column_ids are provided for mapping)
 	if (input.filters && !input.filters->filters.empty() && !input.column_ids.empty()) {
 		// Map filter indices from column_ids space to schema space
@@ -1814,11 +1807,11 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 			}
 		}
 	}
-	
+
 	// Store requested columns in schema order for consistent projection
 	vector<idx_t> sorted_indices(needed_column_indices.begin(), needed_column_indices.end());
 	std::sort(sorted_indices.begin(), sorted_indices.end());
-	
+
 	for (idx_t col_idx : sorted_indices) {
 		result->requested_column_indices.push_back(col_idx);
 		result->requested_column_names.push_back(data.column_names[col_idx]);
@@ -1842,7 +1835,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 				filter_index_map[i] = col_id;
 			}
 		}
-		
+
 		// Create a new filter set with remapped indices
 		auto remapped_filters = make_uniq<TableFilterSet>();
 		for (const auto &filter_pair : input.filters->filters) {
@@ -1853,7 +1846,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 				remapped_filters->filters[schema_col_idx] = filter_pair.second->Copy();
 			}
 		}
-		
+
 		// Convert DuckDB filters to MongoDB query using remapped indices
 		auto mongo_filter = ConvertFiltersToMongoQuery(remapped_filters.get(), data.column_names, data.column_types,
 		                                               data.column_name_to_mongo_path);
@@ -1869,16 +1862,18 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 
 	// Build MongoDB projection from requested columns
 	if (!result->requested_column_indices.empty()) {
-		vector<column_t> projection_column_ids(result->requested_column_indices.begin(), result->requested_column_indices.end());
-		auto projection_doc = BuildMongoProjection(projection_column_ids, data.column_names, data.column_name_to_mongo_path);
-		
+		vector<column_t> projection_column_ids(result->requested_column_indices.begin(),
+		                                       result->requested_column_indices.end());
+		auto projection_doc =
+		    BuildMongoProjection(projection_column_ids, data.column_names, data.column_name_to_mongo_path);
+
 		// Check if projection document has fields (empty means return all fields)
 		auto proj_view = projection_doc.view();
 		int field_count = 0;
 		for (auto it = proj_view.begin(); it != proj_view.end(); ++it) {
 			field_count++;
 		}
-		
+
 		if (field_count > 0) {
 			// Store projection document to keep it alive for cursor lifetime
 			result->projection_document = std::move(projection_doc);
@@ -1914,25 +1909,25 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	std::cerr << "[MONGO DEBUG] Creating MongoDB cursor\n";
 	std::cerr << "[MONGO DEBUG]   Database: " << data.database_name << ", Collection: " << data.collection_name << "\n";
 	std::cerr << "[MONGO DEBUG]   Query filter: " << bsoncxx::to_json(query_filter.view()) << "\n";
-	
+
 	// Check if limit is set
 	if (opts.limit()) {
 		std::cerr << "[MONGO DEBUG]   Limit set: " << opts.limit().value() << "\n";
 	} else {
 		std::cerr << "[MONGO DEBUG]   No limit set\n";
 	}
-	
+
 	// Check if projection is set
 	if (opts.projection()) {
 		std::cerr << "[MONGO DEBUG]   Projection set: " << bsoncxx::to_json(opts.projection().value()) << "\n";
 	} else {
 		std::cerr << "[MONGO DEBUG]   No projection set\n";
 	}
-	
+
 	result->cursor = make_uniq<mongocxx::cursor>(collection.find(query_filter, opts));
 	result->current = make_uniq<mongocxx::cursor::iterator>(result->cursor->begin());
 	result->end = make_uniq<mongocxx::cursor::iterator>(result->cursor->end());
-	
+
 	std::cerr << "[MONGO DEBUG] Cursor created\n";
 	std::cerr << "[MONGO DEBUG]   Cursor has documents? " << (*result->current != *result->end ? "yes" : "no") << "\n";
 
@@ -1956,7 +1951,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		state.requested_column_names.clear();
 		state.requested_column_types.clear();
 		state.requested_column_indices.clear();
-		
+
 		while (count < max_count && *state.current != *state.end) {
 			++(*state.current);
 			count++;
@@ -1967,11 +1962,11 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		}
 		return;
 	}
-	
+
 	// Use requested columns if projection pushdown is active, otherwise use all columns
 	const vector<string> *column_names;
 	const vector<LogicalType> *column_types;
-	
+
 	if (!state.requested_column_names.empty()) {
 		column_names = &state.requested_column_names;
 		column_types = &state.requested_column_types;
@@ -1979,11 +1974,11 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		column_names = &bind_data.column_names;
 		column_types = &bind_data.column_types;
 	}
-	
+
 	if (output.data.empty()) {
 		output.Initialize(context, *column_types);
 	}
-	
+
 	idx_t num_cols_to_use = MinValue<idx_t>(column_names->size(), output.ColumnCount());
 
 	// Initialize vectors for scanning
@@ -2002,8 +1997,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		auto doc = **state.current;
 		vector<string> trunc_names(column_names->begin(), column_names->begin() + num_cols_to_use);
 		vector<LogicalType> trunc_types(column_types->begin(), column_types->begin() + num_cols_to_use);
-		FlattenDocument(doc, trunc_names, trunc_types, output, count,
-		                bind_data.column_name_to_mongo_path);
+		FlattenDocument(doc, trunc_names, trunc_types, output, count, bind_data.column_name_to_mongo_path);
 		++(*state.current);
 		count++;
 	}
