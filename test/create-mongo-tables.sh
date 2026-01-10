@@ -415,6 +415,54 @@ db.schema_test_paths.insertOne({
   }
 });
 
+// Collection with __schema document where _id is already in schema
+// This tests that we don't duplicate _id when it's already present
+db.schema_test_with_id.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    _id_field: 'custom_id_1',
+    name: 'Test1',
+    value: 100
+  },
+  {
+    _id: ObjectId('507f1f77bcf86cd799439012'),
+    _id_field: 'custom_id_2',
+    name: 'Test2',
+    value: 200
+  }
+]);
+
+// Insert __schema document with _id already included in schema
+db.schema_test_with_id.insertOne({
+  _id: '__schema',
+  _id_field: 'VARCHAR',
+  name: 'VARCHAR',
+  value: 'BIGINT'
+});
+
+// Collection with __schema document with various data types
+// Tests order preservation with different types
+db.schema_test_types.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    name: 'TypeTest',
+    count: 42,
+    price: 99.99,
+    active: true,
+    created: new Date('2023-01-01T00:00:00Z')
+  }
+]);
+
+// Insert __schema document with various types in specific order
+db.schema_test_types.insertOne({
+  _id: '__schema',
+  name: 'VARCHAR',
+  count: 'BIGINT',
+  price: 'DOUBLE',
+  active: 'BOOLEAN',
+  created: 'TIMESTAMP'
+});
+
 print('Test database created successfully!');
 print('Database: ' + db.getName());
 print('Collections: ' + db.getCollectionNames().join(', '));
@@ -422,7 +470,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, schema_test_simple, schema_test_nested, schema_test_paths"
+echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types"
 echo ""
 
 # Export environment variables for tests

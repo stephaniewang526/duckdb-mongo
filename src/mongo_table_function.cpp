@@ -806,7 +806,7 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, vector<string> &column_names,
                                    vector<LogicalType> &column_types,
                                    unordered_map<string, string> &column_name_to_mongo_path) {
-	// Check for __schema document in the collection (for Atlas SQL customers)
+	// Check for __schema document in the collection (for Atlas SQL users)
 	bsoncxx::builder::basic::document filter_builder;
 	filter_builder.append(bsoncxx::builder::basic::kvp("_id", "__schema"));
 	auto filter = filter_builder.extract();
@@ -870,35 +870,19 @@ bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, vector<strin
 		column_name_to_mongo_path[field_name] = mongo_path;
 	}
 
-	// Always ensure _id is first if we have other columns
-	if (!column_names.empty() && column_names[0] != "_id") {
-		// Check if _id exists, if not add it
-		bool has_id = false;
-		for (size_t i = 0; i < column_names.size(); i++) {
-			if (column_names[i] == "_id") {
-				// Move _id to front
-				std::string id_name = column_names[i];
-				LogicalType id_type = column_types[i];
-				std::string id_path = column_name_to_mongo_path[id_name];
-				
-				column_names.erase(column_names.begin() + i);
-				column_types.erase(column_types.begin() + i);
-				column_name_to_mongo_path.erase(id_name);
-				
-				column_names.insert(column_names.begin(), id_name);
-				column_types.insert(column_types.begin(), id_type);
-				column_name_to_mongo_path[id_name] = id_path;
-				has_id = true;
-				break;
-			}
+	// Only ensure _id exists (add it if missing)
+	bool has_id = false;
+	for (size_t i = 0; i < column_names.size(); i++) {
+		if (column_names[i] == "_id") {
+			has_id = true;
+			break;
 		}
-		
-		if (!has_id) {
-			// Add _id at the beginning
-			column_names.insert(column_names.begin(), "_id");
-			column_types.insert(column_types.begin(), LogicalType::VARCHAR);
-			column_name_to_mongo_path["_id"] = "_id";
-		}
+	}
+	
+	if (!has_id) {
+		column_names.push_back("_id");
+		column_types.push_back(LogicalType::VARCHAR);
+		column_name_to_mongo_path["_id"] = "_id";
 	}
 
 	return !column_names.empty();
@@ -915,14 +899,6 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 	auto &struct_children = StructValue::GetChildren(columns_value);
 	D_ASSERT(StructType::GetChildCount(child_type) == struct_children.size());
 
-	// DuckDB struct literals are sorted alphabetically by field name
-	// When we iterate using StructType::GetChildName, we get them in alphabetical order
-	// But DuckDB's internal representation might use a different order
-	// We need to match the order DuckDB uses for column indices
-	// The key insight: input.column_ids will reference columns by their position in the schema
-	// So we should preserve the order we get from StructType::GetChildName (alphabetical)
-	// and NOT reorder, as DuckDB has already bound the query based on this order
-	
 	for (idx_t i = 0; i < struct_children.size(); i++) {
 		auto &name = StructType::GetChildName(child_type, i);
 		auto &val = struct_children[i];
@@ -978,23 +954,14 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 		column_types.push_back(field_type);
 		column_name_to_mongo_path[name] = mongo_path;
 	}
-	
-	// Debug: Log column order after parsing (DuckDB's struct order, which may be alphabetical)
-	// std::cerr << "DEBUG: After parsing struct (DuckDB order), column_names: ";
-	// for (size_t i = 0; i < column_names.size(); i++) {
-	// 	std::cerr << i << ":" << column_names[i] << " ";
-	// }
-	// std::cerr << std::endl;
 
 	D_ASSERT(column_names.size() == column_types.size());
 	if (column_names.empty()) {
 		throw BinderException("mongo_scan \"columns\" parameter needs at least one column.");
 	}
 
-	// When user provides columns, DON'T reorder - preserve DuckDB's struct order
-	// DuckDB has already bound the query based on this order, and input.column_ids
-	// will reference columns by their position in this order
-	// Only ensure _id exists (add it if missing), but don't move it to front
+	// Preserve DuckDB's struct order - don't reorder as DuckDB has already bound the query
+	// Only ensure _id exists (add it if missing)
 	bool has_id = false;
 	for (size_t i = 0; i < column_names.size(); i++) {
 		if (column_names[i] == "_id") {
@@ -1004,18 +971,10 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 	}
 	
 	if (!has_id) {
-		// Add _id at the end (preserving user's order preference)
 		column_names.push_back("_id");
 		column_types.push_back(LogicalType::VARCHAR);
 		column_name_to_mongo_path["_id"] = "_id";
 	}
-	
-	// Debug: Log column order after parsing (no reordering for user-provided columns)
-	// std::cerr << "DEBUG: After parsing (user-provided, no reorder), column_names: ";
-	// for (size_t i = 0; i < column_names.size(); i++) {
-	// 	std::cerr << column_names[i] << "->" << column_name_to_mongo_path[column_names[i]] << " ";
-	// }
-	// std::cerr << std::endl;
 }
 
 void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_size, vector<string> &column_names,
@@ -1235,9 +1194,6 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 	for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
 		const auto &column_name = column_names[col_idx];
 		const auto &column_type = column_types[col_idx];
-		
-		// Debug: Log what we're extracting
-		// std::cerr << "DEBUG: col_idx=" << col_idx << ", column_name=" << column_name << std::endl;
 
 		if (column_type.id() == LogicalTypeId::LIST) {
 			auto element = doc[column_name];
@@ -1335,10 +1291,6 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 		if (path_it != column_name_to_mongo_path.end()) {
 			mongo_field_name = path_it->second;
 		}
-		
-		// Debug: Log field lookup
-		// std::cerr << "DEBUG: col_idx=" << col_idx << ", column_name=" << column_name 
-		//           << ", mongo_field_name=" << mongo_field_name << std::endl;
 
 		bsoncxx::document::element element;
 		
@@ -1355,8 +1307,6 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 				if (field_key == mongo_field_name) {
 					element = *it;
 					found = true;
-					// Debug: Log what field we found
-					// std::cerr << "DEBUG: Found field '" << field_key << "' for column '" << column_name << "'" << std::endl;
 					break;
 				}
 			}
@@ -2083,15 +2033,6 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		// No filter pruning: use all column_ids
 		columns_to_fetch = input.column_ids;
 	}
-	
-	// Debug: Log input.column_ids order
-	// std::cerr << "DEBUG: input.column_ids order: ";
-	// for (column_t col_id : input.column_ids) {
-	// 	if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-	// 		std::cerr << col_id << "(" << data.column_names[col_id] << ") ";
-	// 	}
-	// }
-	// std::cerr << std::endl;
 
 	// Add selected columns to needed set
 	for (column_t col_id : columns_to_fetch) {
@@ -2209,8 +2150,6 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 					result->requested_column_indices.push_back(col_idx);
 					result->requested_column_names.push_back(data.column_names[col_idx]);
 					result->requested_column_types.push_back(data.column_types[col_idx]);
-					// Debug: Log what we're adding
-					// std::cerr << "DEBUG: Adding requested column: idx=" << col_idx << ", name=" << data.column_names[col_idx] << std::endl;
 				}
 			}
 		}

@@ -139,6 +139,59 @@ SELECT _id, name, city FROM mongo_test.schema_test_paths WHERE name = 'Alice';
 ----
 507f1f77bcf86cd799439011	Alice	New York
 
+# Test __schema document column order preservation
+# Verify that column order from __schema document is preserved
+query III
+SELECT name, age, email FROM mongo_test.schema_test_simple WHERE name = 'Alice';
+----
+Alice	30	alice@example.com
+
+# Test __schema document with mongo_scan
+query III
+SELECT _id, name, age FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'schema_test_simple'
+) WHERE name = 'Alice' LIMIT 1;
+----
+507f1f77bcf86cd799439011	Alice	30
+
+# Test __schema document preserves order even when selecting specific columns
+query III
+SELECT age, email, name FROM mongo_test.schema_test_simple WHERE name = 'Alice';
+----
+30	alice@example.com	Alice
+
+# Test __schema document with nested format preserves order
+query III
+SELECT email, active, name FROM mongo_test.schema_test_nested WHERE name = 'Alice';
+----
+alice@example.com	true	Alice
+
+# Test __schema document where _id is already in schema (should not duplicate)
+query IIII
+SELECT _id, _id_field, name, value FROM mongo_test.schema_test_with_id WHERE name = 'Test1';
+----
+507f1f77bcf86cd799439011	custom_id_1	Test1	100
+
+# Test __schema document preserves order when _id is in middle of schema
+query IIII
+SELECT _id_field, _id, name, value FROM mongo_test.schema_test_with_id WHERE name = 'Test1';
+----
+custom_id_1	507f1f77bcf86cd799439011	Test1	100
+
+# Test __schema document with various data types preserves order
+query IIIIII
+SELECT _id, name, count, price, active, created FROM mongo_test.schema_test_types WHERE name = 'TypeTest';
+----
+507f1f77bcf86cd799439011	TypeTest	42	99.99	true	2023-01-01 00:00:00
+
+# Test __schema document order is preserved even with different SELECT order
+query IIIIII
+SELECT count, active, name, price, created, _id FROM mongo_test.schema_test_types WHERE name = 'TypeTest';
+----
+42	true	TypeTest	99.99	2023-01-01 00:00:00	507f1f77bcf86cd799439011
+
 # ============================================================================
 # Test Priority: User Columns > __schema > Inference
 # ============================================================================
