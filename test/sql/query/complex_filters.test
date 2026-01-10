@@ -1,0 +1,59 @@
+# name: test/sql/query/complex_filters.test
+# description: Test complex filter pushdown with function calls and expressions
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# Test LENGTH function pushdown (all names are > 3 chars: Alice=5, Bob=3, Charlie=7, Diana=5)
+# This should return 3 rows (excluding Bob which has length 3)
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE LENGTH(name) > 3;
+----
+3
+
+# Test LENGTH function with specific value (Alice=5, Bob=3, Charlie=7, Diana=5)
+query III
+SELECT name, email, age FROM mongo_test.users WHERE LENGTH(name) = 5 ORDER BY name;
+----
+Alice	alice@example.com	30
+Diana	diana@example.com	28
+
+# Test YEAR function pushdown (all users have created_at in 2023)
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE YEAR(created_at) >= 2023;
+----
+4
+
+# Test MONTH function pushdown (only Alice has created_at in month 1)
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE MONTH(created_at) = 1;
+----
+1
+
+# Test complex filter combined with simple filter
+# Diana=28, Alice=30, Charlie=35 all have length > 3 and age > 25
+query III
+SELECT name, email, age FROM mongo_test.users WHERE LENGTH(name) > 3 AND age > 25 ORDER BY age;
+----
+Diana	diana@example.com	28
+Alice	alice@example.com	30
+Charlie	charlie@example.com	35
+
+# Test column-to-column comparison (complex filter)
+query III
+SELECT name, age, balance FROM mongo_test.users WHERE age > balance ORDER BY age;
+----
+
+# Test function call with comparison (Bob=15, others > 15: Alice=17, Charlie=19, Diana=17)
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE LENGTH(email) > 15;
+----
+3
+
+statement ok
+DETACH mongo_test;

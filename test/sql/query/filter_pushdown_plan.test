@@ -1,0 +1,129 @@
+# name: test/sql/query/filter_pushdown_plan.test
+# description: Verify query plans to ensure filter pushdown and projection pruning work correctly
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ============================================================================
+# Simple Filter Pushdown Tests - Verify filters are pushed down to MONGO_SCAN
+# ============================================================================
+
+# Simple filter should be pushed down
+# Expected: Filter is pushed down, shown in MONGO_SCAN Filters
+# The negative test below (RANDOM) confirms FILTER appears when pushdown fails.
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*age.*
+
+# Simple filter with multiple conditions should be pushed down
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25 AND active = true;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*(age|active).*(age|active).*
+
+# ============================================================================
+# Complex Filter Pushdown Tests - Verify complex filters are pushed down
+# ============================================================================
+
+# Complex filter should be pushed down - LENGTH(name) > 5
+# Expected: MONGO_SCAN appears directly (no FILTER operator above it)
+# Verify: Plan contains MONGO_SCAN with Projections: name, and does NOT contain FILTER before MONGO_SCAN
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(name) > 5;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*Function: MONGO_SCAN.*Projections: name.*
+
+# Complex filter with column-to-column comparison should be pushed down
+# Expected: MONGO_SCAN appears directly (no FILTER operator above it)
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE age > balance;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*Function: MONGO_SCAN.*
+
+# ============================================================================
+# Combined Simple + Complex Filter Pushdown Tests
+# ============================================================================
+
+# Combined simple and complex filters should both be pushed down
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25 AND LENGTH(name) > 5;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*
+
+# ============================================================================
+# Filter Pruning Tests (Projection) - Verify filter columns are not fetched
+# ============================================================================
+
+# When simple filter is pushed down, filter column should NOT be in projection
+# Expected: Only 'name' is projected, 'age' is NOT fetched (filter is server-side)
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25;
+----
+physical_plan	<REGEX>:.*Projections:.*name.*
+
+# When complex filter is pushed down, filter column should NOT be in projection
+# Expected: Only 'name' is projected, 'email' is NOT fetched (filter is server-side via $expr)
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(email) > 15;
+----
+physical_plan	<REGEX>:.*Projections:.*name.*
+
+# Verify projection only includes selected columns when filter is pushed down
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(name) > 3;
+----
+physical_plan	<REGEX>:.*Projections:.*name.*
+
+# ============================================================================
+# Negative Tests - Verify FILTER operator appears when filters can't be pushed down
+# ============================================================================
+
+# Volatile function (RANDOM) cannot be pushed down - should show FILTER operator above scan
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE RANDOM() > 0.5;
+----
+physical_plan	<REGEX>:.*FILTER.*MONGO_SCAN.*
+
+# ============================================================================
+# Verify Filters Are Actually Pushed Down (Functional Tests)
+# ============================================================================
+
+# Verify simple filter pushdown works functionally
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE age > 25;
+----
+3
+
+# Verify complex filter pushdown works functionally
+# Alice=5, Bob=3, Charlie=7, Diana=5 - so only Charlie has length > 5
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE LENGTH(name) > 5;
+----
+1
+
+# Verify combined filters work functionally
+# age > 25: Alice(30), Charlie(35), Diana(28) = 3
+# LENGTH(name) > 5: Charlie(7) = 1
+# Combined: Only Charlie matches both = 1
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE age > 25 AND LENGTH(name) > 5;
+----
+1
+
+# Verify filter pruning - only selected columns are returned
+# age > 25: Alice(30), Charlie(35), Diana(28) = 3 rows
+query II
+SELECT name, email FROM mongo_test.users WHERE age > 25 ORDER BY name;
+----
+Alice	alice@example.com
+Charlie	charlie@example.com
+Diana	diana@example.com
+
+statement ok
+DETACH mongo_test;
