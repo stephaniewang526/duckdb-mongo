@@ -2091,12 +2091,50 @@ static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr,
 	return true;
 }
 
+// Helper function to quickly check if an expression is a simple column-to-constant comparison
+// This avoids expensive operations for simple filters that should be handled by TableFilter pushdown
+static bool IsSimpleColumnToConstantComparison(const Expression &expr) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
+		return false;
+	}
+
+	auto &comp_expr = expr.Cast<BoundComparisonExpression>();
+	const Expression *left_expr = comp_expr.left.get();
+	const Expression *right_expr = comp_expr.right.get();
+
+	// Unwrap CAST on left side (shallow check only)
+	if (left_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
+		auto &cast_expr = left_expr->Cast<BoundCastExpression>();
+		left_expr = cast_expr.child.get();
+	}
+
+	// Unwrap CAST on right side (shallow check only)
+	if (right_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
+		auto &cast_expr = right_expr->Cast<BoundCastExpression>();
+		right_expr = cast_expr.child.get();
+	}
+
+	bool left_is_column = left_expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+	bool right_is_constant = right_expr->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT;
+	bool left_is_function = left_expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
+	bool right_is_function = right_expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
+
+	// Simple filter: column-to-constant comparison without functions
+	return left_is_column && right_is_constant && !left_is_function && !right_is_function;
+}
+
 // Helper function to convert an expression to MongoDB $expr format
 static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<string> &column_names,
                                          const unordered_map<string, string> &column_name_to_mongo_path,
                                          idx_t table_index, bsoncxx::builder::basic::document &result_builder) {
 	// Check if expression is volatile or can throw
 	if (expr.IsVolatile() || expr.CanThrow()) {
+		return false;
+	}
+
+	// Early exit for simple column-to-constant comparisons before expensive operations
+	// These should be handled by TableFilter conversion, which produces faster MongoDB native queries
+	if (IsSimpleColumnToConstantComparison(expr)) {
 		return false;
 	}
 
@@ -2251,6 +2289,15 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 	// Process each filter expression
 	for (auto it = filters.begin(); it != filters.end();) {
 		auto &filter_expr = *it;
+
+		// Early exit for simple filters - skip expensive conversion attempt
+		// This avoids overhead from ConvertExpressionToMongoExpr for filters that
+		// will be handled by TableFilter conversion anyway
+		if (IsSimpleColumnToConstantComparison(*filter_expr)) {
+			++it;
+			continue;
+		}
+
 		// Try to convert expression to MongoDB $expr
 		bsoncxx::builder::basic::document expr_doc;
 		if (ConvertExpressionToMongoExpr(*filter_expr, mongo_data.column_names, mongo_data.column_name_to_mongo_path,
@@ -2398,11 +2445,6 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 
 unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
                                                        GlobalTableFunctionState *global_state) {
-	std::cerr << "[MONGO] MongoScanInitLocal: Called" << std::endl;
-	if (input.filters && !input.filters->filters.empty()) {
-		std::cerr << "[MONGO] MongoScanInitLocal: Has " << input.filters->filters.size() << " table filters"
-		          << std::endl;
-	}
 	const auto &data = dynamic_cast<const MongoScanData &>(*input.bind_data);
 	auto result = make_uniq<MongoScanState>();
 
