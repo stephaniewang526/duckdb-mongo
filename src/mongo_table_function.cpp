@@ -1778,7 +1778,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	result->collection_name = data.collection_name;
 	result->filter_query = data.filter_query;
 
-	// Projection pushdown: collect columns needed (selected + filter columns)
+	// Projection pushdown: collect columns needed (selected + filter columns that couldn't be pushed down)
 	unordered_set<idx_t> needed_column_indices;
 
 	// Add selected columns
@@ -1788,42 +1788,13 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		}
 	}
 
-	// Add filter columns (if filters exist and column_ids are provided for mapping)
-	if (input.filters && !input.filters->filters.empty() && !input.column_ids.empty()) {
-		// Map filter indices from column_ids space to schema space
-		unordered_map<idx_t, idx_t> filter_index_map;
-		for (size_t i = 0; i < input.column_ids.size(); i++) {
-			column_t col_id = input.column_ids[i];
-			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-				filter_index_map[i] = col_id;
-			}
-		}
-		// Add filter columns to needed set
-		for (const auto &filter_pair : input.filters->filters) {
-			idx_t filter_col_idx = filter_pair.first;
-			auto it = filter_index_map.find(filter_col_idx);
-			if (it != filter_index_map.end()) {
-				needed_column_indices.insert(it->second);
-			}
-		}
-	}
-
-	// Store requested columns in schema order for consistent projection
-	vector<idx_t> sorted_indices(needed_column_indices.begin(), needed_column_indices.end());
-	std::sort(sorted_indices.begin(), sorted_indices.end());
-
-	for (idx_t col_idx : sorted_indices) {
-		result->requested_column_indices.push_back(col_idx);
-		result->requested_column_names.push_back(data.column_names[col_idx]);
-		result->requested_column_types.push_back(data.column_types[col_idx]);
-	}
-
 	// Get collection
 	auto db = result->connection->client[result->database_name];
 	auto collection = db[result->collection_name];
 
-	// Build query from pushed-down filters
+	// Build query from pushed-down filters first to determine which filters were successfully pushed down
 	bsoncxx::document::view_or_value query_filter;
+	bool filters_pushed_down = false;
 	if (input.filters) {
 		// Map filter column indices from column_ids space to schema space
 		unordered_map<idx_t, idx_t> filter_index_map;
@@ -1845,14 +1816,70 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 			}
 		}
 
-		// Convert DuckDB filters to MongoDB query using remapped indices
-		auto mongo_filter = ConvertFiltersToMongoQuery(remapped_filters.get(), data.column_names, data.column_types,
-		                                               data.column_name_to_mongo_path);
-		query_filter = std::move(mongo_filter);
+		// Only attempt conversion if we successfully remapped at least one filter
+		if (!remapped_filters->filters.empty()) {
+			// Convert DuckDB filters to MongoDB query using remapped indices
+			auto mongo_filter = ConvertFiltersToMongoQuery(remapped_filters.get(), data.column_names, data.column_types,
+			                                               data.column_name_to_mongo_path);
+			
+			// Check if filters were successfully pushed down (non-empty MongoDB query)
+			// If filters are pushed down to MongoDB, MongoDB filters server-side and we don't need filter columns
+			auto filter_view = mongo_filter.view();
+			// Count non-empty fields in the filter document
+			idx_t filter_field_count = 0;
+			for (auto it = filter_view.begin(); it != filter_view.end(); ++it) {
+				filter_field_count++;
+			}
+			// Filters were pushed down if we have a non-empty filter document
+			// (empty document means conversion failed or filters couldn't be converted)
+			filters_pushed_down = (filter_field_count > 0);
+			
+			query_filter = std::move(mongo_filter);
+		} else {
+			// No filters could be remapped, so they can't be pushed down
+			filters_pushed_down = false;
+			query_filter = bsoncxx::builder::stream::document {} << bsoncxx::builder::stream::finalize;
+		}
 	} else if (!result->filter_query.empty()) {
 		query_filter = bsoncxx::from_json(result->filter_query);
+		filters_pushed_down = true; // Manual filter query means filters are pushed down
 	} else {
 		query_filter = bsoncxx::builder::stream::document {} << bsoncxx::builder::stream::finalize;
+	}
+
+	// Only add filter columns if filters couldn't be pushed down (for post-scan filtering in DuckDB)
+	// If filters are successfully pushed down to MongoDB, MongoDB filters server-side before returning
+	// results, so we don't need those filter columns in the projection.
+	// TODO: Once pushdown_complex_filter is implemented, we can track which specific filters
+	//       failed to push down and only add columns for those filters (some filters may push down
+	//       while others remain in DuckDB)
+	if (input.filters && !input.filters->filters.empty() && !input.column_ids.empty() && !filters_pushed_down) {
+		// Map filter indices from column_ids space to schema space
+		unordered_map<idx_t, idx_t> filter_index_map;
+		for (size_t i = 0; i < input.column_ids.size(); i++) {
+			column_t col_id = input.column_ids[i];
+			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
+				filter_index_map[i] = col_id;
+			}
+		}
+		// Add filter columns to needed set (only if filters weren't pushed down)
+		for (const auto &filter_pair : input.filters->filters) {
+			idx_t filter_col_idx = filter_pair.first;
+			auto it = filter_index_map.find(filter_col_idx);
+			if (it != filter_index_map.end()) {
+				needed_column_indices.insert(it->second);
+			}
+		}
+	}
+
+	// Store requested columns in schema order for consistent projection
+	vector<idx_t> sorted_indices(needed_column_indices.begin(), needed_column_indices.end());
+	std::sort(sorted_indices.begin(), sorted_indices.end());
+
+	for (idx_t col_idx : sorted_indices) {
+		result->requested_column_indices.push_back(col_idx);
+		result->requested_column_names.push_back(data.column_names[col_idx]);
+		result->requested_column_types.push_back(data.column_types[col_idx]);
 	}
 
 	// Build MongoDB find options
