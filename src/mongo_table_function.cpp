@@ -1781,8 +1781,25 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Projection pushdown: collect columns needed (selected + filter columns that couldn't be pushed down)
 	unordered_set<idx_t> needed_column_indices;
 
-	// Add selected columns
-	for (column_t col_id : input.column_ids) {
+	// Determine which columns to fetch based on filter_prune optimization
+	// When filter_prune is enabled and projection_ids is populated, DuckDB has already
+	// excluded filter columns that aren't used elsewhere in the query plan
+	vector<column_t> columns_to_fetch;
+	if (input.CanRemoveFilterColumns() && !input.projection_ids.empty()) {
+		// Filter pruning is active: use projection_ids to get only columns actually needed
+		// projection_ids contains indices into input.column_ids
+		for (idx_t proj_idx : input.projection_ids) {
+			if (proj_idx < input.column_ids.size()) {
+				columns_to_fetch.push_back(input.column_ids[proj_idx]);
+			}
+		}
+	} else {
+		// No filter pruning: use all column_ids
+		columns_to_fetch = input.column_ids;
+	}
+
+	// Add selected columns to needed set
+	for (column_t col_id : columns_to_fetch) {
 		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
 			needed_column_indices.insert(col_id);
 		}
@@ -1850,6 +1867,8 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Only add filter columns if filters couldn't be pushed down (for post-scan filtering in DuckDB)
 	// If filters are successfully pushed down to MongoDB, MongoDB filters server-side before returning
 	// results, so we don't need those filter columns in the projection.
+	// Note: When filter_prune is active, filter columns that aren't used elsewhere are excluded from
+	// projection_ids, but we still need them if filters can't be pushed down for post-scan filtering.
 	// TODO: Once pushdown_complex_filter is implemented, we can track which specific filters
 	//       failed to push down and only add columns for those filters (some filters may push down
 	//       while others remain in DuckDB)
