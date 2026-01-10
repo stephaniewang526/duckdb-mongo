@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: DuckDB Community Support
+    url: https://github.com/duckdb/duckdb/discussions
+    about: Ask questions and get help from the DuckDB community
