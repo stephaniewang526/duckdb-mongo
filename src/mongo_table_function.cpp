@@ -1906,7 +1906,7 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 }
 
 // Helper function to unwrap CAST expressions and get the underlying column reference
-static const BoundColumnRefExpression* UnwrapCastToColumnRef(const Expression &expr) {
+static const BoundColumnRefExpression *UnwrapCastToColumnRef(const Expression &expr) {
 	const Expression *current = &expr;
 	// Unwrap CAST expressions recursively
 	while (current->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
@@ -1921,9 +1921,8 @@ static const BoundColumnRefExpression* UnwrapCastToColumnRef(const Expression &e
 }
 
 // Helper function to convert a column reference to MongoDB field path
-static string GetMongoPathForColumn(const BoundColumnRefExpression &col_ref,
-                                     const vector<string> &column_names,
-                                     const unordered_map<string, string> &column_name_to_mongo_path) {
+static string GetMongoPathForColumn(const BoundColumnRefExpression &col_ref, const vector<string> &column_names,
+                                    const unordered_map<string, string> &column_name_to_mongo_path) {
 	idx_t col_idx = col_ref.binding.column_index;
 	if (col_idx >= column_names.size()) {
 		return "";
@@ -1937,8 +1936,7 @@ static string GetMongoPathForColumn(const BoundColumnRefExpression &col_ref,
 }
 
 // Helper function to get MongoDB path from an expression (handles CAST-wrapped columns)
-static string GetMongoPathFromExpression(const Expression &expr,
-                                         const vector<string> &column_names,
+static string GetMongoPathFromExpression(const Expression &expr, const vector<string> &column_names,
                                          const unordered_map<string, string> &column_name_to_mongo_path) {
 	const BoundColumnRefExpression *col_ref = UnwrapCastToColumnRef(expr);
 	if (col_ref) {
@@ -1982,20 +1980,21 @@ static void AppendConstantToBSONArray(const BoundConstantExpression &const_expr,
 // Function mapping configuration for MongoDB pushdown
 struct MongoFunctionMapping {
 	vector<string> duckdb_names;              // All aliases for this function
-	string mongo_operator;                     // MongoDB aggregation operator (e.g., "$strLenCP")
-	idx_t arg_count;                           // Expected argument count
-	vector<LogicalTypeId> required_arg_types;  // Required argument types (empty = any type)
-	bool requires_date_type;                   // If true, first arg must be DATE/TIMESTAMP/TIMESTAMP_TZ
+	string mongo_operator;                    // MongoDB aggregation operator (e.g., "$strLenCP")
+	idx_t arg_count;                          // Expected argument count
+	vector<LogicalTypeId> required_arg_types; // Required argument types (empty = any type)
+	bool requires_date_type;                  // If true, first arg must be DATE/TIMESTAMP/TIMESTAMP_TZ
 };
 
 static const vector<MongoFunctionMapping> MONGO_FUNCTION_MAPPINGS = {
-	// String functions
-	{{"length", "len", "char_length", "character_length"}, "$strLenCP", 1, {LogicalTypeId::VARCHAR}, false},
-	
-	// Date functions
-	{{"year"}, "$year", 1, {}, true},
-	{{"month"}, "$month", 1, {}, true},
-	{{"day", "dayofmonth"}, "$dayOfMonth", 1, {}, true},
+    // String functions
+    {{"length", "len", "char_length", "character_length"}, "$strLenCP", 1, {LogicalTypeId::VARCHAR}, false},
+
+    // Date functions
+    // TODO: Re-enable date functions (YEAR, MONTH, DAY) once type mismatch issues with FilterCombiner are resolved
+    // {{"year"}, "$year", 1, {}, true},
+    // {{"month"}, "$month", 1, {}, true},
+    // {{"day", "dayofmonth"}, "$dayOfMonth", 1, {}, true},
 };
 
 // Helper function to check if a function name matches any of the given names (case-insensitive)
@@ -2020,13 +2019,12 @@ static const MongoFunctionMapping *FindFunctionMapping(const string &func_name) 
 }
 
 // Helper function to validate function signature
-static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr,
-                                      const MongoFunctionMapping &mapping) {
+static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, const MongoFunctionMapping &mapping) {
 	// Check argument count
 	if (func_expr.children.size() != mapping.arg_count) {
 		return false;
 	}
-	
+
 	// Check required argument types if specified
 	if (!mapping.required_arg_types.empty() && mapping.required_arg_types.size() == mapping.arg_count) {
 		for (idx_t i = 0; i < mapping.arg_count; i++) {
@@ -2035,7 +2033,7 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr,
 			}
 		}
 	}
-	
+
 	// Check if date/timestamp type is required
 	// For date functions, we need to check the underlying type (unwrap CAST if present)
 	if (mapping.requires_date_type && mapping.arg_count > 0) {
@@ -2046,59 +2044,57 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr,
 			first_arg = cast_expr.child.get();
 		}
 		auto first_arg_type = first_arg->return_type.id();
-		if (first_arg_type != LogicalTypeId::DATE &&
-		    first_arg_type != LogicalTypeId::TIMESTAMP &&
+		if (first_arg_type != LogicalTypeId::DATE && first_arg_type != LogicalTypeId::TIMESTAMP &&
 		    first_arg_type != LogicalTypeId::TIMESTAMP_TZ) {
 			return false;
 		}
 	}
-	
+
 	return true;
 }
 
 // Helper function to convert a DuckDB function to MongoDB aggregation operator
-static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr,
-                                        const vector<string> &column_names,
-                                        const unordered_map<string, string> &column_name_to_mongo_path,
-                                        bsoncxx::builder::basic::document &result_builder) {
+static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr, const vector<string> &column_names,
+                                       const unordered_map<string, string> &column_name_to_mongo_path,
+                                       bsoncxx::builder::basic::document &result_builder) {
 	const string &func_name = func_expr.function.name;
-	
+
 	// Find function mapping
 	const MongoFunctionMapping *mapping = FindFunctionMapping(func_name);
 	if (!mapping) {
 		return false;
 	}
-	
+
 	// Validate function signature
 	if (!ValidateFunctionSignature(func_expr, *mapping)) {
 		return false;
 	}
-	
+
 	// All supported functions currently require a single column reference argument (may be CAST-wrapped)
 	if (func_expr.children.size() != 1) {
 		return false;
 	}
 	auto &child = func_expr.children[0];
-	
+
 	// Unwrap CAST expressions to get to the underlying column reference
 	const BoundColumnRefExpression *col_ref = UnwrapCastToColumnRef(*child);
 	if (!col_ref) {
 		return false;
 	}
-	
+
 	string mongo_path = GetMongoPathForColumn(*col_ref, column_names, column_name_to_mongo_path);
 	if (mongo_path.empty()) {
 		return false;
 	}
-	
+
 	result_builder.append(bsoncxx::builder::basic::kvp(mapping->mongo_operator, mongo_path));
 	return true;
 }
 
 // Helper function to convert an expression to MongoDB $expr format
 static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<string> &column_names,
-                                          const unordered_map<string, string> &column_name_to_mongo_path,
-                                          idx_t table_index, bsoncxx::builder::basic::document &result_builder) {
+                                         const unordered_map<string, string> &column_name_to_mongo_path,
+                                         idx_t table_index, bsoncxx::builder::basic::document &result_builder) {
 	// Check if expression is volatile or can throw
 	if (expr.IsVolatile() || expr.CanThrow()) {
 		return false;
@@ -2116,29 +2112,29 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COMPARISON: {
 		auto &comp_expr = expr.Cast<BoundComparisonExpression>();
-		
+
 		// Unwrap CAST expressions on both sides to get to underlying expressions
 		const Expression *left_expr = comp_expr.left.get();
 		const Expression *right_expr = comp_expr.right.get();
-		
+
 		// Unwrap CAST on left side
 		while (left_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 			auto &cast_expr = left_expr->Cast<BoundCastExpression>();
 			left_expr = cast_expr.child.get();
 		}
-		
+
 		// Unwrap CAST on right side
 		while (right_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 			auto &cast_expr = right_expr->Cast<BoundCastExpression>();
 			right_expr = cast_expr.child.get();
 		}
-		
+
 		bool left_is_column = left_expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
 		bool right_is_constant = right_expr->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT;
 		bool right_is_column = right_expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
 		bool left_is_function = left_expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
 		bool right_is_function = right_expr->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
-		
+
 		// Skip simple column-to-constant comparisons (e.g., age > 25)
 		// These should be handled by TableFilter conversion, which produces faster MongoDB native queries
 		// (e.g., {age: {$gt: 25}}) that can use indexes efficiently, rather than slower $expr queries
@@ -2146,7 +2142,7 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 		if (left_is_column && right_is_constant && !left_is_function && !right_is_function) {
 			return false;
 		}
-		
+
 		// Handle complex comparisons: column-to-column, function calls, etc.
 		ExpressionType comp_type = comp_expr.type;
 		string mongo_op;
@@ -2194,7 +2190,22 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 		// Convert right side (using unwrapped expression)
 		if (right_expr->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 			auto &right_const = right_expr->Cast<BoundConstantExpression>();
-			AppendConstantToBSONArray(right_const, args_array);
+			// Cast constant to match left expression type if needed
+			// This handles cases like YEAR() returning BIGINT but constant being INTEGER
+			Value const_val = right_const.value;
+			if (left_expr->return_type != const_val.type()) {
+				Value casted_val;
+				string error_message;
+				if (const_val.DefaultTryCastAs(left_expr->return_type, casted_val, &error_message, true)) {
+					BoundConstantExpression casted_const(casted_val);
+					AppendConstantToBSONArray(casted_const, args_array);
+				} else {
+					// Cast failed - use original value
+					AppendConstantToBSONArray(right_const, args_array);
+				}
+			} else {
+				AppendConstantToBSONArray(right_const, args_array);
+			}
 		} else {
 			// Try to get MongoDB path (handles CAST-wrapped column references)
 			string right_path = GetMongoPathFromExpression(*right_expr, column_names, column_name_to_mongo_path);
@@ -2240,11 +2251,10 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 	// Process each filter expression
 	for (auto it = filters.begin(); it != filters.end();) {
 		auto &filter_expr = *it;
-
 		// Try to convert expression to MongoDB $expr
 		bsoncxx::builder::basic::document expr_doc;
-		if (ConvertExpressionToMongoExpr(*filter_expr, mongo_data.column_names,
-		                                  mongo_data.column_name_to_mongo_path, get.table_index, expr_doc)) {
+		if (ConvertExpressionToMongoExpr(*filter_expr, mongo_data.column_names, mongo_data.column_name_to_mongo_path,
+		                                 get.table_index, expr_doc)) {
 			// Successfully converted - merge into $expr document
 			// Merge expressions using $and if we have multiple
 			if (has_complex_filter) {
@@ -2388,6 +2398,11 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 
 unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
                                                        GlobalTableFunctionState *global_state) {
+	std::cerr << "[MONGO] MongoScanInitLocal: Called" << std::endl;
+	if (input.filters && !input.filters->filters.empty()) {
+		std::cerr << "[MONGO] MongoScanInitLocal: Has " << input.filters->filters.size() << " table filters"
+		          << std::endl;
+	}
 	const auto &data = dynamic_cast<const MongoScanData &>(*input.bind_data);
 	auto result = make_uniq<MongoScanState>();
 
