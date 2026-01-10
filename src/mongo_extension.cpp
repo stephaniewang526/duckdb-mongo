@@ -30,6 +30,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Enable filter pushdown
 	mongo_scan.filter_pushdown = true;
+	// Enable projection pushdown
+	mongo_scan.projection_pushdown = true;
+	// Enable filter pruning: filter columns that aren't used elsewhere don't need to be fetched
+	mongo_scan.filter_prune = true;
 
 	// Create TableFunctionInfo with description and comment
 	TableFunctionSet mongo_scan_set("mongo_scan");

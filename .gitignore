@@ -18,6 +18,7 @@ host=*
 *.db
 *.duckdb
 *.duckdb.wal
+*.log
 
 # Local CI testing files
 docker-compose.ci.yml

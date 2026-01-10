@@ -49,8 +49,14 @@ struct MongoScanState : public LocalTableFunctionState {
 	unique_ptr<mongocxx::cursor::iterator> current;
 	unique_ptr<mongocxx::cursor::iterator> end;
 	bool finished = false;
+	// Projection information: which columns are requested from MongoDB
+	vector<idx_t> requested_column_indices;
+	vector<string> requested_column_names;
+	vector<LogicalType> requested_column_types;
+	// Keep projection document alive for the lifetime of the cursor
+	bsoncxx::document::value projection_document;
 
-	MongoScanState() : limit(-1), finished(false) {
+	MongoScanState() : limit(-1), finished(false), projection_document(bsoncxx::builder::basic::document {}.extract()) {
 	}
 };
 
@@ -72,10 +78,16 @@ void FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
 
+// Projection pushdown function
+bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
+                                              const vector<string> &all_column_names,
+                                              const unordered_map<string, string> &column_name_to_mongo_path);
+
 // Filter pushdown functions
 bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,
                                                     const vector<string> &column_names,
-                                                    const vector<LogicalType> &column_types);
+                                                    const vector<LogicalType> &column_types,
+                                                    const unordered_map<string, string> &column_name_to_mongo_path);
 
 class MongoClearCacheFunction : public TableFunction {
 public:
