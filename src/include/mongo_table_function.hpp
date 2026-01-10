@@ -35,7 +35,10 @@ struct MongoScanData : public TableFunctionData {
 	// e.g., "address_city" -> "address.city", "l_returnflag" -> "l_returnflag"
 	unordered_map<string, string> column_name_to_mongo_path;
 
-	MongoScanData() : sample_size(100) {
+	// Complex filter pushdown: MongoDB $expr queries for complex expressions
+	bsoncxx::document::value complex_filter_expr;
+
+	MongoScanData() : sample_size(100), complex_filter_expr(bsoncxx::builder::basic::document {}.extract()) {
 	}
 };
 
@@ -96,6 +99,10 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
                                                     const vector<string> &column_names,
                                                     const vector<LogicalType> &column_types,
                                                     const unordered_map<string, string> &column_name_to_mongo_path);
+
+// Complex filter pushdown function
+void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
+                                vector<unique_ptr<Expression>> &filters);
 
 class MongoClearCacheFunction : public TableFunction {
 public:

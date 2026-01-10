@@ -9,6 +9,8 @@
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
+#include "duckdb/planner/expression.hpp"
 
 namespace duckdb {
 
@@ -18,6 +20,8 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
                                                        GlobalTableFunctionState *global_state);
 void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output);
+void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
+                                vector<unique_ptr<Expression>> &filters);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register MongoDB table function
@@ -35,6 +39,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	mongo_scan.projection_pushdown = true;
 	// Enable filter pruning: filter columns that aren't used elsewhere don't need to be fetched
 	mongo_scan.filter_prune = true;
+	// Enable complex filter pushdown
+	mongo_scan.pushdown_complex_filter = MongoPushdownComplexFilter;
 
 	// Create TableFunctionInfo with description and comment
 	TableFunctionSet mongo_scan_set("mongo_scan");
