@@ -27,6 +27,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Add optional parameters
 	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
 	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
+	mongo_scan.named_parameters["columns"] = LogicalType::ANY;
 
 	// Enable filter pushdown
 	mongo_scan.filter_pushdown = true;

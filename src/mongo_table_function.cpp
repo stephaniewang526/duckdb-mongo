@@ -4,6 +4,7 @@
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/planner/filter/constant_filter.hpp"
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
@@ -802,6 +803,180 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 	}
 }
 
+bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, vector<string> &column_names,
+                                  vector<LogicalType> &column_types,
+                                  unordered_map<string, string> &column_name_to_mongo_path) {
+	// Check for __schema document in the collection (for Atlas SQL users)
+	bsoncxx::builder::basic::document filter_builder;
+	filter_builder.append(bsoncxx::builder::basic::kvp("_id", "__schema"));
+	auto filter = filter_builder.extract();
+
+	auto schema_doc = collection.find_one(filter.view());
+	if (!schema_doc) {
+		return false;
+	}
+
+	auto doc_view = schema_doc->view();
+	bsoncxx::document::view schema_doc_view;
+
+	// Check if schema is in a nested "schema" field, or directly in the document
+	auto schema_element = doc_view["schema"];
+	if (schema_element && schema_element.type() == bsoncxx::type::k_document) {
+		// Schema is nested: { "_id": "__schema", "schema": { "field1": "VARCHAR", ... } }
+		schema_doc_view = schema_element.get_document().value;
+	} else {
+		// Schema is directly in the document: { "_id": "__schema", "field1": "VARCHAR", ... }
+		schema_doc_view = doc_view;
+	}
+
+	// Parse schema document - expected format: { "field1": "VARCHAR", "field2": "BIGINT", ... }
+	// Or could be nested: { "field1": { "type": "VARCHAR", "path": "field1" }, ... }
+	for (auto it = schema_doc_view.begin(); it != schema_doc_view.end(); ++it) {
+		std::string field_name = std::string(it->key().data(), it->key().length());
+
+		// Skip _id and "schema" fields (metadata, not actual schema fields)
+		if (field_name == "_id" || field_name == "schema") {
+			continue;
+		}
+
+		LogicalType field_type;
+		std::string mongo_path = field_name;
+
+		if (it->type() == bsoncxx::type::k_string) {
+			// Simple format: "field": "VARCHAR"
+			std::string type_str(it->get_string().value.data(), it->get_string().value.length());
+			field_type = TransformStringToLogicalType(type_str);
+		} else if (it->type() == bsoncxx::type::k_document) {
+			// Nested format: "field": { "type": "VARCHAR", "path": "field.path" }
+			auto field_doc = it->get_document().value;
+			auto type_elem = field_doc["type"];
+			if (type_elem && type_elem.type() == bsoncxx::type::k_string) {
+				std::string type_str(type_elem.get_string().value.data(), type_elem.get_string().value.length());
+				field_type = TransformStringToLogicalType(type_str);
+			} else {
+				continue; // Skip invalid entries
+			}
+
+			auto path_elem = field_doc["path"];
+			if (path_elem && path_elem.type() == bsoncxx::type::k_string) {
+				mongo_path = std::string(path_elem.get_string().value.data(), path_elem.get_string().value.length());
+			}
+		} else {
+			continue; // Skip invalid entries
+		}
+
+		column_names.push_back(field_name);
+		column_types.push_back(field_type);
+		column_name_to_mongo_path[field_name] = mongo_path;
+	}
+
+	// Only ensure _id exists (add it if missing)
+	bool has_id = false;
+	for (size_t i = 0; i < column_names.size(); i++) {
+		if (column_names[i] == "_id") {
+			has_id = true;
+			break;
+		}
+	}
+
+	if (!has_id) {
+		column_names.push_back("_id");
+		column_types.push_back(LogicalType::VARCHAR);
+		column_name_to_mongo_path["_id"] = "_id";
+	}
+
+	return !column_names.empty();
+}
+
+void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &columns_value, vector<string> &column_names,
+                                     vector<LogicalType> &column_types,
+                                     unordered_map<string, string> &column_name_to_mongo_path) {
+	auto &child_type = columns_value.type();
+	if (child_type.id() != LogicalTypeId::STRUCT) {
+		throw BinderException("mongo_scan \"columns\" parameter requires a struct as input.");
+	}
+
+	auto &struct_children = StructValue::GetChildren(columns_value);
+	D_ASSERT(StructType::GetChildCount(child_type) == struct_children.size());
+
+	for (idx_t i = 0; i < struct_children.size(); i++) {
+		auto &name = StructType::GetChildName(child_type, i);
+		auto &val = struct_children[i];
+		if (val.IsNull()) {
+			throw BinderException("mongo_scan \"columns\" parameter type specification cannot be NULL.");
+		}
+
+		LogicalType field_type;
+		std::string mongo_path = name;
+
+		if (val.type().id() == LogicalTypeId::VARCHAR) {
+			// Simple format: column name -> type string
+			field_type = TransformStringToLogicalType(StringValue::Get(val), context);
+		} else if (val.type().id() == LogicalTypeId::STRUCT) {
+			// Nested format: column name -> { "type": "VARCHAR", "path": "field.path" }
+			auto &nested_children = StructValue::GetChildren(val);
+			auto &nested_type = val.type();
+
+			// Look for "type" field
+			bool found_type = false;
+			for (idx_t j = 0; j < nested_children.size(); j++) {
+				auto &nested_name = StructType::GetChildName(nested_type, j);
+				if (StringUtil::Lower(nested_name) == "type") {
+					auto &type_val = nested_children[j];
+					if (type_val.type().id() == LogicalTypeId::VARCHAR) {
+						field_type = TransformStringToLogicalType(StringValue::Get(type_val), context);
+						found_type = true;
+					}
+					break;
+				}
+			}
+
+			if (!found_type) {
+				throw BinderException("mongo_scan \"columns\" parameter nested struct must contain a \"type\" field.");
+			}
+
+			// Look for "path" field (optional)
+			for (idx_t j = 0; j < nested_children.size(); j++) {
+				auto &nested_name = StructType::GetChildName(nested_type, j);
+				if (StringUtil::Lower(nested_name) == "path") {
+					auto &path_val = nested_children[j];
+					if (path_val.type().id() == LogicalTypeId::VARCHAR) {
+						mongo_path = StringValue::Get(path_val);
+					}
+					break;
+				}
+			}
+		} else {
+			throw BinderException("mongo_scan \"columns\" parameter type specification must be VARCHAR or STRUCT.");
+		}
+
+		column_names.push_back(name);
+		column_types.push_back(field_type);
+		column_name_to_mongo_path[name] = mongo_path;
+	}
+
+	D_ASSERT(column_names.size() == column_types.size());
+	if (column_names.empty()) {
+		throw BinderException("mongo_scan \"columns\" parameter needs at least one column.");
+	}
+
+	// Preserve DuckDB's struct order - don't reorder as DuckDB has already bound the query
+	// Only ensure _id exists (add it if missing)
+	bool has_id = false;
+	for (size_t i = 0; i < column_names.size(); i++) {
+		if (column_names[i] == "_id") {
+			has_id = true;
+			break;
+		}
+	}
+
+	if (!has_id) {
+		column_names.push_back("_id");
+		column_types.push_back(LogicalType::VARCHAR);
+		column_name_to_mongo_path["_id"] = "_id";
+	}
+}
+
 void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_size, vector<string> &column_names,
                               vector<LogicalType> &column_types,
                               unordered_map<string, string> &column_name_to_mongo_path) {
@@ -1110,14 +1285,33 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			continue;
 		}
 
-		auto element = doc[column_name];
+		// Get MongoDB path for this column
+		std::string mongo_field_name = column_name;
+		auto path_it = column_name_to_mongo_path.find(column_name);
+		if (path_it != column_name_to_mongo_path.end()) {
+			mongo_field_name = path_it->second;
+		}
 
-		if (!element) {
-			// Try MongoDB path-based lookup for nested fields
-			auto path_it = column_name_to_mongo_path.find(column_name);
-			if (path_it != column_name_to_mongo_path.end()) {
-				element = getElementByMongoPath(path_it->second);
-			} else {
+		bsoncxx::document::element element;
+
+		// Check if this is a nested path (contains dots)
+		if (mongo_field_name.find('.') != std::string::npos) {
+			// Use MongoDB path-based lookup for nested fields
+			element = getElementByMongoPath(mongo_field_name);
+		} else {
+			// Direct field access - iterate to find exact match by name
+			// This ensures we get the correct field even if doc[string] has issues
+			bool found = false;
+			for (auto it = doc.begin(); it != doc.end(); ++it) {
+				std::string field_key(it->key().data(), it->key().length());
+				if (field_key == mongo_field_name) {
+					element = *it;
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				// Fallback to underscore-based path splitting
 				element = getElementByPath(column_name);
 			}
 		}
@@ -1279,9 +1473,30 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 	auto db = result->connection->client[result->database_name];
 	auto collection = db[result->collection_name];
 
-	// Infer schema
-	InferSchemaFromDocuments(collection, result->sample_size, result->column_names, result->column_types,
-	                         result->column_name_to_mongo_path);
+	// Schema resolution priority:
+	// 1. User-provided columns parameter (highest priority)
+	// 2. __schema document in collection (for Atlas SQL customers)
+	// 3. Infer from documents (fallback)
+	bool schema_set = false;
+
+	// Check for user-provided columns parameter
+	if (input.named_parameters.find("columns") != input.named_parameters.end()) {
+		ParseSchemaFromColumnsParameter(context, input.named_parameters["columns"], result->column_names,
+		                                result->column_types, result->column_name_to_mongo_path);
+		schema_set = true;
+	}
+
+	// If no user-provided schema, check for __schema document (Atlas SQL)
+	if (!schema_set) {
+		schema_set = ParseSchemaFromAtlasDocument(collection, result->column_names, result->column_types,
+		                                          result->column_name_to_mongo_path);
+	}
+
+	// If still no schema, infer from documents
+	if (!schema_set) {
+		InferSchemaFromDocuments(collection, result->sample_size, result->column_names, result->column_types,
+		                         result->column_name_to_mongo_path);
+	}
 
 	// Set return types and names
 	return_types = result->column_types;
@@ -1912,14 +2127,66 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		}
 	}
 
-	// Store requested columns in schema order for consistent projection
-	vector<idx_t> sorted_indices(needed_column_indices.begin(), needed_column_indices.end());
-	std::sort(sorted_indices.begin(), sorted_indices.end());
+	// Store requested columns in the order DuckDB requested them (from input.column_ids)
+	// This is critical: output.data columns must match the order DuckDB expects
+	// input.column_ids contains the column indices in the order DuckDB wants them
+	unordered_set<idx_t> needed_set(needed_column_indices.begin(), needed_column_indices.end());
 
-	for (idx_t col_idx : sorted_indices) {
-		result->requested_column_indices.push_back(col_idx);
-		result->requested_column_names.push_back(data.column_names[col_idx]);
-		result->requested_column_types.push_back(data.column_types[col_idx]);
+	// First, add columns in the order DuckDB requested them (from input.column_ids)
+	// This preserves the SELECT clause order
+	for (column_t col_id : input.column_ids) {
+		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
+			idx_t col_idx = col_id;
+			if (needed_set.find(col_idx) != needed_set.end()) {
+				// Check if already added (to avoid duplicates)
+				bool already_added = false;
+				for (idx_t req_idx : result->requested_column_indices) {
+					if (req_idx == col_idx) {
+						already_added = true;
+						break;
+					}
+				}
+				if (!already_added) {
+					result->requested_column_indices.push_back(col_idx);
+					result->requested_column_names.push_back(data.column_names[col_idx]);
+					result->requested_column_types.push_back(data.column_types[col_idx]);
+				}
+			}
+		}
+	}
+
+	// Also add any filter columns that weren't in input.column_ids (if filters weren't pushed down)
+	if (input.filters && !input.filters->filters.empty() && !input.column_ids.empty() && !filters_pushed_down) {
+		unordered_map<idx_t, idx_t> filter_index_map;
+		for (size_t i = 0; i < input.column_ids.size(); i++) {
+			column_t col_id = input.column_ids[i];
+			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
+				filter_index_map[i] = col_id;
+			}
+		}
+		for (const auto &filter_pair : input.filters->filters) {
+			idx_t filter_col_idx = filter_pair.first;
+			auto it = filter_index_map.find(filter_col_idx);
+			if (it != filter_index_map.end()) {
+				idx_t schema_col_idx = it->second;
+				// Only add if not already added
+				if (needed_set.find(schema_col_idx) != needed_set.end()) {
+					// Check if already in requested columns
+					bool already_added = false;
+					for (idx_t req_idx : result->requested_column_indices) {
+						if (req_idx == schema_col_idx) {
+							already_added = true;
+							break;
+						}
+					}
+					if (!already_added) {
+						result->requested_column_indices.push_back(schema_col_idx);
+						result->requested_column_names.push_back(data.column_names[schema_col_idx]);
+						result->requested_column_types.push_back(data.column_types[schema_col_idx]);
+					}
+				}
+			}
+		}
 	}
 
 	// Build MongoDB find options
@@ -2060,6 +2327,7 @@ void RegisterMongoTableFunction(DatabaseInstance &db) {
 	// Add optional parameters
 	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
 	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
+	mongo_scan.named_parameters["columns"] = LogicalType::ANY;
 
 	// Register the table function using ExtensionLoader
 	// Note: This should be called from ExtensionLoader::Load, not directly

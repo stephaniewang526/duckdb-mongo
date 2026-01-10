@@ -1,0 +1,294 @@
+# name: test/sql/schema/schema_provided.test
+# description: Tests for user-provided schema and __schema document parsing
+# group: [schema]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ============================================================================
+# Test User-Provided Columns Parameter (Simple Format)
+# ============================================================================
+
+# Test basic user-provided schema with simple format
+query III
+SELECT _id, name, age FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'age': 'BIGINT'}
+) ORDER BY name LIMIT 2;
+----
+507f1f77bcf86cd799439011	Alice	30
+507f1f77bcf86cd799439012	Bob	25
+
+# Test user-provided schema with different types
+# Note: DuckDB structs preserve the order provided, and _id is always moved to first position
+query IIII
+SELECT _id, name, active, balance FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'active': 'BOOLEAN', 'balance': 'DOUBLE'}
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	true	1000.5
+
+# Test user-provided schema with nested path mapping
+query III
+SELECT _id, name, city FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {
+        '_id': 'VARCHAR',
+        'name': 'VARCHAR',
+        'city': {'type': 'VARCHAR', 'path': 'address.city'}
+    }
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	New York
+
+# Test user-provided schema with DATE type
+query III
+SELECT _id, name, created_at FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'created_at': 'DATE'}
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	2023-01-01
+
+# Test user-provided schema with TIMESTAMP type
+query III
+SELECT _id, name, created_at FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'created_at': 'TIMESTAMP'}
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	2023-01-01 00:00:00
+
+# ============================================================================
+# Test User-Provided Columns Parameter (Nested Format)
+# ============================================================================
+
+# Test nested format with path mapping
+query IIII
+SELECT _id, name, street, city FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {
+        '_id': 'VARCHAR',
+        'name': 'VARCHAR',
+        'street': {'type': 'VARCHAR', 'path': 'address.street'},
+        'city': {'type': 'VARCHAR', 'path': 'address.city'}
+    }
+) WHERE name = 'Bob';
+----
+507f1f77bcf86cd799439012	Bob	456 Oak Ave	Los Angeles
+
+# Test nested format with mixed simple and nested
+query IIIII
+SELECT _id, name, age, street, zip FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {
+        '_id': 'VARCHAR',
+        'name': 'VARCHAR',
+        'age': 'BIGINT',
+        'street': {'type': 'VARCHAR', 'path': 'address.street'},
+        'zip': {'type': 'VARCHAR', 'path': 'address.zip'}
+    }
+) WHERE name = 'Charlie';
+----
+507f1f77bcf86cd799439013	Charlie	35	789 Pine Rd	60601
+
+# ============================================================================
+# Test __schema Document (Atlas SQL)
+# ============================================================================
+
+# Clear cache to ensure fresh schema resolution
+statement ok
+SELECT * FROM mongo_clear_cache();
+
+# Test __schema document with simple format (direct in document)
+query III
+SELECT _id, name, age FROM mongo_test.schema_test_simple ORDER BY name LIMIT 2;
+----
+507f1f77bcf86cd799439011	Alice	30
+507f1f77bcf86cd799439012	Bob	25
+
+# Test __schema document with nested format (schema field)
+query III
+SELECT _id, name, email FROM mongo_test.schema_test_nested ORDER BY name LIMIT 2;
+----
+507f1f77bcf86cd799439011	Alice	alice@example.com
+507f1f77bcf86cd799439012	Bob	bob@example.com
+
+# Test __schema document with path mapping
+query III
+SELECT _id, name, city FROM mongo_test.schema_test_paths WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	New York
+
+# Test __schema document column order preservation
+# Verify that column order from __schema document is preserved
+query III
+SELECT name, age, email FROM mongo_test.schema_test_simple WHERE name = 'Alice';
+----
+Alice	30	alice@example.com
+
+# Test __schema document with mongo_scan
+query III
+SELECT _id, name, age FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'schema_test_simple'
+) WHERE name = 'Alice' LIMIT 1;
+----
+507f1f77bcf86cd799439011	Alice	30
+
+# Test __schema document preserves order even when selecting specific columns
+query III
+SELECT age, email, name FROM mongo_test.schema_test_simple WHERE name = 'Alice';
+----
+30	alice@example.com	Alice
+
+# Test __schema document with nested format preserves order
+query III
+SELECT email, active, name FROM mongo_test.schema_test_nested WHERE name = 'Alice';
+----
+alice@example.com	true	Alice
+
+# Test __schema document where _id is already in schema (should not duplicate)
+query IIII
+SELECT _id, _id_field, name, value FROM mongo_test.schema_test_with_id WHERE name = 'Test1';
+----
+507f1f77bcf86cd799439011	custom_id_1	Test1	100
+
+# Test __schema document preserves order when _id is in middle of schema
+query IIII
+SELECT _id_field, _id, name, value FROM mongo_test.schema_test_with_id WHERE name = 'Test1';
+----
+custom_id_1	507f1f77bcf86cd799439011	Test1	100
+
+# Test __schema document with various data types preserves order
+query IIIIII
+SELECT _id, name, count, price, active, created FROM mongo_test.schema_test_types WHERE name = 'TypeTest';
+----
+507f1f77bcf86cd799439011	TypeTest	42	99.99	true	2023-01-01 00:00:00
+
+# Test __schema document order is preserved even with different SELECT order
+query IIIIII
+SELECT count, active, name, price, created, _id FROM mongo_test.schema_test_types WHERE name = 'TypeTest';
+----
+42	true	TypeTest	99.99	2023-01-01 00:00:00	507f1f77bcf86cd799439011
+
+# ============================================================================
+# Test Priority: User Columns > __schema > Inference
+# ============================================================================
+
+# Test that user-provided columns override __schema document
+query III
+SELECT _id, name, custom_field FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'schema_test_simple',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'custom_field': 'VARCHAR'}
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	NULL
+
+# Test that __schema document is used when no user columns provided
+query III
+SELECT _id, name, age FROM mongo_test.schema_test_simple WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	30
+
+# Test that inference is used when neither user columns nor __schema exist
+query III
+SELECT _id, name, email FROM mongo_test.users WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	alice@example.com
+
+# ============================================================================
+# Test Edge Cases
+# ============================================================================
+
+# Test user-provided schema with only _id
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': 'VARCHAR'}
+) WHERE _id IS NOT NULL;
+----
+4
+
+# Test user-provided schema with non-existent fields (should return NULL)
+query III
+SELECT _id, name, nonexistent_field FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'nonexistent_field': 'VARCHAR'}
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	NULL
+
+# Test user-provided schema with invalid path (should return NULL)
+query III
+SELECT _id, name, invalid_path FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {
+        '_id': 'VARCHAR',
+        'name': 'VARCHAR',
+        'invalid_path': {'type': 'VARCHAR', 'path': 'nonexistent.nested.path'}
+    }
+) WHERE name = 'Alice';
+----
+507f1f77bcf86cd799439011	Alice	NULL
+
+# Test error: columns parameter must be STRUCT
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := 'invalid'
+);
+----
+
+# Test error: columns parameter cannot have NULL type
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'_id': NULL}
+);
+----
+
+# Test error: columns parameter needs at least one column
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {}
+);
+----
+
+statement ok
+DETACH mongo_test;

@@ -327,6 +327,142 @@ db.object_container_test.insertMany([
   }
 ]);
 
+// Create collections with __schema documents for testing schema functionality
+// These simulate Atlas SQL collections with predefined schemas
+
+// Collection with __schema document (simple format - schema directly in document)
+db.schema_test_simple.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    name: 'Alice',
+    age: 30,
+    email: 'alice@example.com'
+  },
+  {
+    _id: ObjectId('507f1f77bcf86cd799439012'),
+    name: 'Bob',
+    age: 25,
+    email: 'bob@example.com'
+  }
+]);
+
+// Insert __schema document (simple format)
+// Note: _id is automatically added, so we don't include it in the schema
+db.schema_test_simple.insertOne({
+  _id: '__schema',
+  name: 'VARCHAR',
+  age: 'BIGINT',
+  email: 'VARCHAR'
+});
+
+// Collection with __schema document (nested format - schema in nested field)
+db.schema_test_nested.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    name: 'Alice',
+    email: 'alice@example.com',
+    active: true
+  },
+  {
+    _id: ObjectId('507f1f77bcf86cd799439012'),
+    name: 'Bob',
+    email: 'bob@example.com',
+    active: false
+  }
+]);
+
+// Insert __schema document (nested format)
+// Note: _id is automatically added, so we don't include it in the schema
+db.schema_test_nested.insertOne({
+  _id: '__schema',
+  schema: {
+    name: 'VARCHAR',
+    email: 'VARCHAR',
+    active: 'BOOLEAN'
+  }
+});
+
+// Collection with __schema document using path mapping
+db.schema_test_paths.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    name: 'Alice',
+    address: {
+      city: 'New York',
+      street: '123 Main St'
+    }
+  },
+  {
+    _id: ObjectId('507f1f77bcf86cd799439012'),
+    name: 'Bob',
+    address: {
+      city: 'Los Angeles',
+      street: '456 Oak Ave'
+    }
+  }
+]);
+
+// Insert __schema document with path mapping
+// Note: _id is automatically added, so we don't include it in the schema
+db.schema_test_paths.insertOne({
+  _id: '__schema',
+  schema: {
+    name: 'VARCHAR',
+    city: {
+      type: 'VARCHAR',
+      path: 'address.city'
+    }
+  }
+});
+
+// Collection with __schema document where _id is already in schema
+// This tests that we don't duplicate _id when it's already present
+db.schema_test_with_id.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    _id_field: 'custom_id_1',
+    name: 'Test1',
+    value: 100
+  },
+  {
+    _id: ObjectId('507f1f77bcf86cd799439012'),
+    _id_field: 'custom_id_2',
+    name: 'Test2',
+    value: 200
+  }
+]);
+
+// Insert __schema document with _id already included in schema
+db.schema_test_with_id.insertOne({
+  _id: '__schema',
+  _id_field: 'VARCHAR',
+  name: 'VARCHAR',
+  value: 'BIGINT'
+});
+
+// Collection with __schema document with various data types
+// Tests order preservation with different types
+db.schema_test_types.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439011'),
+    name: 'TypeTest',
+    count: 42,
+    price: 99.99,
+    active: true,
+    created: new Date('2023-01-01T00:00:00Z')
+  }
+]);
+
+// Insert __schema document with various types in specific order
+db.schema_test_types.insertOne({
+  _id: '__schema',
+  name: 'VARCHAR',
+  count: 'BIGINT',
+  price: 'DOUBLE',
+  active: 'BOOLEAN',
+  created: 'TIMESTAMP'
+});
+
 print('Test database created successfully!');
 print('Database: ' + db.getName());
 print('Collections: ' + db.getCollectionNames().join(', '));
@@ -334,7 +470,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test"
+echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types"
 echo ""
 
 # Export environment variables for tests
