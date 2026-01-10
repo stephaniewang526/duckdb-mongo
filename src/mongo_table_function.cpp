@@ -2056,9 +2056,7 @@ static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr,
 		return false;
 	}
 	
-	// Remove $ prefix for field reference (MongoDB operators expect field paths without $)
-	string field_path = mongo_path.substr(1);
-	result_builder.append(bsoncxx::builder::basic::kvp(mapping->mongo_operator, field_path));
+	result_builder.append(bsoncxx::builder::basic::kvp(mapping->mongo_operator, mongo_path));
 	return true;
 }
 
@@ -2083,9 +2081,23 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 	switch (expr.GetExpressionClass()) {
 	case ExpressionClass::BOUND_COMPARISON: {
 		auto &comp_expr = expr.Cast<BoundComparisonExpression>();
+		
+		bool left_is_column = comp_expr.left->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+		bool right_is_constant = comp_expr.right->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT;
+		bool right_is_column = comp_expr.right->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
+		bool left_is_function = comp_expr.left->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
+		bool right_is_function = comp_expr.right->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION;
+		
+		// Skip simple column-to-constant comparisons (e.g., age > 25)
+		// These should be handled by TableFilter conversion, which produces faster MongoDB native queries
+		// (e.g., {age: {$gt: 25}}) that can use indexes efficiently, rather than slower $expr queries
+		// (e.g., {$expr: {$gt: ["$age", 25]}}) which cannot use indexes as effectively.
+		if (left_is_column && right_is_constant && !left_is_function && !right_is_function) {
+			return false;
+		}
+		
+		// Handle complex comparisons: column-to-column, function calls, etc.
 		ExpressionType comp_type = comp_expr.type;
-
-		// Get MongoDB comparison operator
 		string mongo_op;
 		switch (comp_type) {
 		case ExpressionType::COMPARE_GREATERTHAN:
@@ -2155,7 +2167,6 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 		}
 
 		// Build comparison expression: { $mongo_op: [left_expr, right_expr] }
-		// The result_builder will contain the comparison operator directly
 		result_builder.append(bsoncxx::builder::basic::kvp(mongo_op, args_array.extract()));
 		return true;
 	}
@@ -2169,6 +2180,9 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 }
 
 // Main complex filter pushdown function
+// This is called before TableFilter conversion. We intentionally skip simple
+// column-to-constant comparisons here so they can be handled by TableFilter conversion,
+// which produces faster MongoDB native queries.
 void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
                                 vector<unique_ptr<Expression>> &filters) {
 	auto &mongo_data = bind_data->Cast<MongoScanData>();
@@ -2186,33 +2200,29 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 		if (ConvertExpressionToMongoExpr(*filter_expr, mongo_data.column_names,
 		                                  mongo_data.column_name_to_mongo_path, get.table_index, expr_doc)) {
 			// Successfully converted - merge into $expr document
-			auto expr_value = expr_doc.extract();
-			auto expr_view = expr_value.view();
-			if (!expr_view.empty()) {
-				// Merge expressions using $and if we have multiple
-				if (has_complex_filter) {
-					// We need to wrap existing and new expressions in $and
-					bsoncxx::builder::basic::document new_expr_builder;
-					bsoncxx::builder::basic::array and_array;
+			// Merge expressions using $and if we have multiple
+			if (has_complex_filter) {
+				// We need to wrap existing and new expressions in $and
+				bsoncxx::builder::basic::document new_expr_builder;
+				bsoncxx::builder::basic::array and_array;
 
-					// Add existing expression
-					auto existing_expr = expr_builder.extract();
-					and_array.append(existing_expr);
+				// Add existing expression
+				auto existing_expr = expr_builder.extract();
+				and_array.append(existing_expr);
 
-					// Add new expression
-					and_array.append(expr_value);
+				// Add new expression
+				and_array.append(expr_doc.extract());
 
-					new_expr_builder.append(bsoncxx::builder::basic::kvp("$and", and_array.extract()));
-					expr_builder = std::move(new_expr_builder);
-				} else {
-					// First expression - just use it directly
-					expr_builder = std::move(expr_doc);
-				}
-				has_complex_filter = true;
-				// Remove from filters vector (successfully pushed down)
-				it = filters.erase(it);
-				continue;
+				new_expr_builder.append(bsoncxx::builder::basic::kvp("$and", and_array.extract()));
+				expr_builder = std::move(new_expr_builder);
+			} else {
+				// First expression - just use it directly
+				expr_builder = std::move(expr_doc);
 			}
+			has_complex_filter = true;
+			// Remove from filters vector (successfully pushed down)
+			it = filters.erase(it);
+			continue;
 		}
 		// Could not convert - leave in filters vector for DuckDB to handle
 		++it;
