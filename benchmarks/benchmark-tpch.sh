@@ -63,6 +63,16 @@ NC='\033[0m' # No Color
 declare -a query_times
 declare -a query_names
 
+# Function to warm up connection and schema (runs once before benchmarks)
+warmup_connection() {
+    # Run a simple query to warm up MongoDB connection, schema inference, and query plan cache
+    "$DUCKDB_PATH" -c "
+        ATTACH 'host=$MONGO_HOST port=$MONGO_PORT database=$MONGO_DB' AS tpch_mongo (TYPE MONGO);
+        SET search_path='tpch_mongo.tpch';
+        SELECT COUNT(*) FROM lineitem LIMIT 1;
+    " > /dev/null 2>&1
+}
+
 # Function to run DuckDB query and measure time
 run_duckdb_query() {
     local query_num=$1
@@ -310,6 +320,10 @@ if [ "$VERBOSE" = true ]; then
     echo "Scale Factor: SF-$SF_ESTIMATE (estimated from data size)"
     echo "Iterations: $ITERATIONS"
     echo ""
+    echo -e "${YELLOW}Warming up connection and schema...${NC}"
+    warmup_connection
+    echo -e "${GREEN}Warmup complete.${NC}"
+    echo ""
     
     if [ "$QUERY_NUM" = "all" ]; then
         echo "Running all TPC-H queries (1-22)..."
@@ -327,6 +341,10 @@ if [ "$VERBOSE" = true ]; then
 else
     echo "=== TPC-H Performance Summary (DuckDB+MongoDB Extension) ==="
     echo "Database: $MONGO_DB | Host: $MONGO_HOST:$MONGO_PORT | Scale Factor: SF-$SF_ESTIMATE | Iterations: $ITERATIONS"
+    echo ""
+    echo "Warming up connection and schema..."
+    warmup_connection
+    echo "Warmup complete."
     echo ""
     
     if [ "$QUERY_NUM" = "all" ]; then
