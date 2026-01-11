@@ -91,6 +91,7 @@ target_link_libraries(test_atlas_integration
 target_include_directories(test_atlas_integration PRIVATE
   src/include
   duckdb/src/include
+  duckdb
   duckdb/third_party/catch
   duckdb/test/include
 )
