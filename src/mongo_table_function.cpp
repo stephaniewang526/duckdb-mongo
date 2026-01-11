@@ -1307,20 +1307,24 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			// Use MongoDB path-based lookup for nested fields
 			element = getElementByMongoPath(mongo_field_name);
 		} else {
-			// Direct field access - iterate to find exact match by name
-			// This ensures we get the correct field even if doc[string] has issues
-			bool found = false;
-			for (auto it = doc.begin(); it != doc.end(); ++it) {
-				std::string field_key(it->key().data(), it->key().length());
-				if (field_key == mongo_field_name) {
-					element = *it;
-					found = true;
-					break;
+			// Try direct field access first (O(1) for top-level fields)
+			element = doc[mongo_field_name];
+
+			// If direct access didn't find the field, try iteration as fallback
+			if (!element) {
+				bool found = false;
+				for (auto it = doc.begin(); it != doc.end(); ++it) {
+					std::string field_key(it->key().data(), it->key().length());
+					if (field_key == mongo_field_name) {
+						element = *it;
+						found = true;
+						break;
+					}
 				}
-			}
-			if (!found) {
-				// Fallback to underscore-based path splitting
-				element = getElementByPath(column_name);
+				if (!found) {
+					// Fallback to underscore-based path splitting
+					element = getElementByPath(column_name);
+				}
 			}
 		}
 

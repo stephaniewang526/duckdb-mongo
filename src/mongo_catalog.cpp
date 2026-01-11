@@ -32,11 +32,14 @@ public:
 	    : DefaultGenerator(catalog), schema(schema), connection_string(connection_string_p),
 	      database_name(database_name_p), collections_loaded(false), mongo_catalog(mongo_catalog_p) {
 		GetMongoInstance();
-		// Pre-warm connection
+		// Pre-warm connection by creating the client
+		// This ensures the connection string is validated early, but doesn't force
+		// database access which might fail if database doesn't exist yet
+		// The actual connection will be established on first use
 		try {
 			GetOrCreateClient();
 		} catch (...) {
-			// Retry when needed
+			// Connection will be established on first actual query if pre-warm fails
 		}
 	}
 
