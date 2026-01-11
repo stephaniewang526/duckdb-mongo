@@ -38,7 +38,8 @@ SELECT * FROM atlas_db.mydb.mycollection;
 - Direct SQL queries over MongoDB collections (no ETL/export)
 - **MongoDB Atlas support** via connection strings or DuckDB Secrets
 - **TLS/SSL encryption** for secure connections
-- Automatic schema inference (samples 100 documents by default)
+- **Flexible schema handling**: User-provided schemas, `__schema` document support (Atlas SQL compatibility), or automatic schema inference
+- Automatic schema inference (samples 100 documents by default, used as fallback)
 - Nested document flattening with underscore-separated names
 - BSON type mapping to DuckDB SQL types
 - **Filter pushdown**: WHERE clauses pushed to MongoDB to leverage indexes
@@ -364,10 +365,33 @@ WHERE unnest.product = 'Mouse';
 You can also use the `mongo_scan` table function directly without attaching:
 
 ```sql
+-- Basic usage
 SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection');
+
+-- With filter and sample size
 SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection', 
                          filter := '{"status": "active"}', sample_size := 200);
+
+-- With explicit schema
+SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
+                         columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'age': 'BIGINT'});
+
+-- With nested path mapping
+SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
+                         columns := {
+                             '_id': 'VARCHAR',
+                             'name': 'VARCHAR',
+                             'city': {'type': 'VARCHAR', 'path': 'address.city'}
+                         });
 ```
+
+**Parameters:**
+- `connection_string`: MongoDB connection string
+- `database`: MongoDB database name
+- `collection`: MongoDB collection name
+- `filter` (optional): MongoDB query filter as JSON string (e.g., `'{"status": "active"}'`)
+- `sample_size` (optional): Number of documents to sample for schema inference (default: 100)
+- `columns` (optional): Explicit schema definition as a struct (see [Schema Resolution](#schema-resolution) for details)
 
 ### Cache Management
 
@@ -404,9 +428,89 @@ After clearing the cache, the next query will re-scan schemas and re-infer colle
 | `Document` | `VARCHAR` | Stored as JSON string |
 | Other | `VARCHAR` | Default for unknown types |
 
-### Schema Inference
+### Schema Resolution
 
-The extension automatically infers schemas by sampling documents (default: 100, configurable via `sample_size`):
+The extension uses a three-tier schema resolution strategy with the following priority order:
+
+1. **User-provided `columns` parameter** (highest priority)
+2. **`__schema` document in collection** (for Atlas SQL compatibility)
+3. **Automatic schema inference** (fallback)
+
+#### User-Provided Schema
+
+You can explicitly specify the schema using the `columns` parameter when calling `mongo_scan`:
+
+**Simple Format:**
+```sql
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'mydb',
+    'mycollection',
+    columns := {'_id': 'VARCHAR', 'name': 'VARCHAR', 'age': 'BIGINT', 'active': 'BOOLEAN'}
+);
+```
+
+**Nested Format with Path Mapping:**
+For nested fields, you can map column names to MongoDB dot notation paths:
+```sql
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'mydb',
+    'mycollection',
+    columns := {
+        '_id': 'VARCHAR',
+        'name': 'VARCHAR',
+        'city': {'type': 'VARCHAR', 'path': 'address.city'},
+        'street': {'type': 'VARCHAR', 'path': 'address.street'}
+    }
+);
+```
+
+The `columns` parameter accepts:
+- **Simple format**: `'column_name': 'TYPE'` where TYPE is a DuckDB type string (e.g., `'VARCHAR'`, `'BIGINT'`, `'DOUBLE'`, `'BOOLEAN'`, `'DATE'`, `'TIMESTAMP'`)
+- **Nested format**: `'column_name': {'type': 'TYPE', 'path': 'mongo.path'}` for mapping to nested MongoDB fields
+
+#### __schema Document (Atlas SQL Compatibility)
+
+For MongoDB Atlas SQL compatibility, you can store a schema document in your collection with `_id: "__schema"`. The extension will automatically detect and use this schema.
+
+**Simple Format** (schema fields directly in document):
+```javascript
+{
+  "_id": "__schema",
+  "name": "VARCHAR",
+  "age": "BIGINT",
+  "email": "VARCHAR"
+}
+```
+
+**Nested Format** (schema in nested `schema` field):
+```javascript
+{
+  "_id": "__schema",
+  "schema": {
+    "name": "VARCHAR",
+    "age": "BIGINT",
+    "email": "VARCHAR"
+  }
+}
+```
+
+**Path Mapping Format** (for nested MongoDB fields):
+```javascript
+{
+  "_id": "__schema",
+  "name": "VARCHAR",
+  "city": {"type": "VARCHAR", "path": "address.city"},
+  "street": {"type": "VARCHAR", "path": "address.street"}
+}
+```
+
+> **Note:** When using `ATTACH` to connect to MongoDB, the `__schema` document is cached along with other schema information. Use `mongo_clear_cache()` to invalidate the cache after schema changes.
+
+#### Schema Inference
+
+When neither user-provided schema nor `__schema` document is available, the extension automatically infers schemas by sampling documents (default: 100, configurable via `sample_size`):
 
 - **Nested Documents**: Flattened with underscore-separated names (e.g., `user_address_city`), up to 5 levels deep
 - **Type Conflicts**: Frequency-based resolution:
@@ -455,7 +559,7 @@ The extension automatically infers schemas by sampling documents (default: 100, 
 ### Limitations
 
 - Read-only
-- Schema inferred from sample (may miss fields)
+- Schema inference (when used as fallback) samples documents and may miss fields that don't appear in the sample
 - Schema re-inferred per query when using `mongo_scan` table function directly (schema is cached when using `ATTACH` catalog views; use `mongo_clear_cache()` to invalidate cache)
 - **Nested documents in arrays**: Nested documents within array elements are stored as VARCHAR (JSON strings) rather than nested STRUCT types
   - Example: `items: [{product: 'Laptop', specs: {cpu: 'Intel', ram: '16GB'}}]` → `specs` field is VARCHAR, not STRUCT
