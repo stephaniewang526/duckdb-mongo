@@ -2,6 +2,8 @@
 #include "catch.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/main/connection.hpp"
+#include "duckdb/main/config.hpp"
+#include "duckdb/main/query_result.hpp"
 #include "duckdb/common/types.hpp"
 #include "mongo_extension.hpp"
 #include <cstdlib>
@@ -10,8 +12,20 @@
 #include <chrono>
 #include <iostream>
 
+// Helper function to print error and check query success
+inline void check_query_result(const std::unique_ptr<duckdb::QueryResult> &result, const std::string &query = "") {
+	if (result->HasError()) {
+		std::cerr << "Query failed";
+		if (!query.empty()) {
+			std::cerr << " for query: " << query;
+		}
+		std::cerr << "\nError: " << result->GetError() << std::endl;
+	}
+	REQUIRE(!result->HasError());
+}
+
 // Helper macro for checking query success
-#define REQUIRE_NO_FAIL(result) REQUIRE(!(result)->HasError())
+#define REQUIRE_NO_FAIL(result) check_query_result(result)
 
 // Simple main function for running the test
 int main(int argc, char *argv[]) {
@@ -29,7 +43,9 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	std::string connection_string = "mongodb+srv://" + std::string(username) + ":" + std::string(password) + "@" +
 	                                std::string(hostname) + "?retryWrites=true&w=majority";
 
-	duckdb::DuckDB db(nullptr);
+	duckdb::DBConfig config;
+	config.options.load_extensions = false;
+	duckdb::DuckDB db(nullptr, &config);
 	db.LoadStaticExtension<duckdb::MongoExtension>();
 	duckdb::Connection con(db);
 
@@ -79,10 +95,11 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		REQUIRE(schema_result->RowCount() == 1);
 
 		// Verify that we can query collections from the specified database
-		auto tables_result =
-		    con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db_with_dbname' "
-		              "AND table_schema = 'smoketests'");
-		REQUIRE(!tables_result->HasError());
+		std::string tables_query =
+		    "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db_with_dbname' "
+		    "AND table_schema = 'smoketests'";
+		auto tables_result = con.Query(tables_query);
+		check_query_result(tables_result, tables_query);
 		REQUIRE(tables_result->RowCount() >= 1); // Should have at least the "test" collection
 
 		// Cleanup
@@ -149,7 +166,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		// USE command should default to "main" schema
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db"));
 		auto result = con.Query("SELECT current_database(), current_schema()");
-		REQUIRE(!result->HasError());
+		check_query_result(result, "SELECT current_database(), current_schema()");
 		REQUIRE(result->RowCount() == 1);
 		auto chunk = result->Fetch();
 		REQUIRE(chunk->GetValue(0, 0).ToString() == "atlas_db");
@@ -179,7 +196,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 
 		REQUIRE_NO_FAIL(con.Query("USE atlas_db.smoketests"));
 		auto result = con.Query("SELECT current_database(), current_schema()");
-		REQUIRE(!result->HasError());
+		check_query_result(result, "SELECT current_database(), current_schema()");
 		REQUIRE(result->RowCount() == 1);
 		auto chunk = result->Fetch();
 		REQUIRE(chunk->GetValue(0, 0).ToString() == "atlas_db");
@@ -196,7 +213,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] SHOW TABLES took " << duration << "ms" << std::endl;
 
-		REQUIRE(!result->HasError());
+		check_query_result(result, "SHOW TABLES");
 		REQUIRE(result->RowCount() == 1);
 		auto chunk = result->Fetch();
 		REQUIRE(chunk->GetValue(0, 0).ToString() == "test");
@@ -248,14 +265,16 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	SECTION("Query information_schema for tables in oa_smoke_test") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
+		std::string info_schema_query =
+		    "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
+		    "table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10";
 		auto start = std::chrono::high_resolution_clock::now();
-		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
-		                        "table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10");
+		auto result = con.Query(info_schema_query);
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Query information_schema.tables took " << duration << "ms" << std::endl;
 
-		REQUIRE(!result->HasError());
+		check_query_result(result, info_schema_query);
 		REQUIRE(result->RowCount() > 0); // Verify we get results
 		auto chunk = result->Fetch();
 		REQUIRE(chunk);
@@ -265,14 +284,16 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 	SECTION("Query a collection from oa_smoke_test schema") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
+		std::string info_schema_query2 =
+		    "SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
+		    "table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10";
 		auto start = std::chrono::high_resolution_clock::now();
-		auto result = con.Query("SELECT table_name FROM information_schema.tables WHERE table_catalog = 'atlas_db' AND "
-		                        "table_schema = 'oa_smoke_test' ORDER BY table_name LIMIT 10");
+		auto result = con.Query(info_schema_query2);
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Query information_schema.tables (oa_smoke_test) took " << duration << "ms" << std::endl;
 
-		REQUIRE(!result->HasError());
+		check_query_result(result, info_schema_query2);
 		REQUIRE(result->RowCount() > 0);
 		auto chunk = result->Fetch();
 		REQUIRE(chunk);
