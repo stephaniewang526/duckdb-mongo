@@ -56,10 +56,27 @@ install(
 # This test is built separately and can be run independently
 # Build the integration test executable
 # Note: This is always built regardless of ENABLE_UNITTEST_CPP_TESTS since it's an extension-specific test
+# Check if LoadAllExtensions exists in DuckDB's extension_helper.cpp
+# In DuckDB v1.4.3 (stable), it exists, so we don't need the stub
+# In DuckDB main, it may not exist, so we need the stub
+# We check by looking for the function definition in the source file
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/duckdb/src/main/extension/extension_helper.cpp" EXTENSION_HELPER_CONTENT)
+string(FIND "${EXTENSION_HELPER_CONTENT}" "void ExtensionHelper::LoadAllExtensions" HAS_LOAD_ALL_EXTENSIONS_POS)
+
 add_executable(test_atlas_integration
   test/integration/test_atlas_integration.cpp
   ${EXTENSION_SOURCES}
 )
+
+# Only add the stub if LoadAllExtensions is not found in the source file
+# If found (HAS_LOAD_ALL_EXTENSIONS_POS >= 0), don't add the stub to avoid duplicate symbols
+if(HAS_LOAD_ALL_EXTENSIONS_POS EQUAL -1)
+  target_sources(test_atlas_integration PRIVATE test/integration/extension_helper_stub.cpp)
+  target_compile_definitions(test_atlas_integration PRIVATE DUCKDB_MAIN_BUILD=1)
+  message(STATUS "LoadAllExtensions not found in DuckDB source - adding stub")
+else()
+  message(STATUS "LoadAllExtensions found in DuckDB source (position ${HAS_LOAD_ALL_EXTENSIONS_POS}) - stub not needed")
+endif()
 
 # Set output directory - force debug builds to go to build/debug/
 # CMAKE_CURRENT_SOURCE_DIR is the directory containing this CMakeLists.txt (project root)
@@ -81,16 +98,24 @@ else()
 endif()
 
 # Link against DuckDB and MongoDB drivers
+# Also link extension_helper to provide ExtensionHelper::LoadAllExtensions
 target_link_libraries(test_atlas_integration
   duckdb_static
   $<IF:$<TARGET_EXISTS:mongo::mongocxx_static>,mongo::mongocxx_static,mongo::mongocxx_shared>
   $<IF:$<TARGET_EXISTS:mongo::bsoncxx_static>,mongo::bsoncxx_static,mongo::bsoncxx_shared>
 )
 
+# Try to link extension_helper object file if available (for DuckDB main compatibility)
+# This provides ExtensionHelper::LoadAllExtensions which is referenced but may not be in duckdb_static
+if(TARGET duckdb_extension_helper)
+  target_link_libraries(test_atlas_integration duckdb_extension_helper)
+endif()
+
 # Include directories
 target_include_directories(test_atlas_integration PRIVATE
   src/include
   duckdb/src/include
+  duckdb
   duckdb/third_party/catch
   duckdb/test/include
 )
