@@ -2034,6 +2034,8 @@ static const MongoFunctionMapping *FindFunctionMapping(const string &func_name) 
 // Helper function to validate function signature
 static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, const MongoFunctionMapping &mapping) {
 	// Check argument count
+	// Note: This logic will need to be extended to handle function overloads i.e. function with the same name that take
+	// different argument types.
 	if (func_expr.children.size() != mapping.arg_count) {
 		return false;
 	}
