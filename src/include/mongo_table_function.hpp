@@ -26,6 +26,9 @@ struct MongoScanData : public TableFunctionData {
 	std::string database_name;
 	std::string collection_name;
 	std::string filter_query;
+	//! Optional MongoDB aggregation pipeline (JSON array string). When set, the scan uses `aggregate(...)` instead of
+	//! `find(...)`. Schema must be provided via `columns` for non-collection-shaped results.
+	std::string pipeline_json;
 	int64_t sample_size;
 
 	// Schema information
@@ -47,6 +50,7 @@ struct MongoScanState : public LocalTableFunctionState {
 	std::string database_name;
 	std::string collection_name;
 	std::string filter_query;
+	std::string pipeline_json;
 	int64_t limit = -1;
 	unique_ptr<mongocxx::cursor> cursor;
 	unique_ptr<mongocxx::cursor::iterator> current;
@@ -58,8 +62,12 @@ struct MongoScanState : public LocalTableFunctionState {
 	vector<LogicalType> requested_column_types;
 	// Keep projection document alive for the lifetime of the cursor
 	bsoncxx::document::value projection_document;
+	// Keep pipeline document alive for the lifetime of the cursor (aggregate path)
+	bsoncxx::document::value pipeline_document;
 
-	MongoScanState() : limit(-1), finished(false), projection_document(bsoncxx::builder::basic::document {}.extract()) {
+	MongoScanState()
+	    : limit(-1), finished(false), projection_document(bsoncxx::builder::basic::document {}.extract()),
+	      pipeline_document(bsoncxx::builder::basic::document {}.extract()) {
 	}
 };
 

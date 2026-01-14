@@ -21,6 +21,7 @@ include_directories(src/include)
 
 set(EXTENSION_SOURCES
     src/mongo_extension.cpp
+    src/mongo_optimizer.cpp
     src/mongo_table_function.cpp
     src/mongo_storage_extension.cpp
     src/mongo_catalog.cpp

@@ -1,0 +1,26 @@
+# name: test/sql/query/topn_pushdown.test
+# description: Verify ORDER BY _id LIMIT is pushed down via MongoDB aggregation pipeline
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ORDER BY _id LIMIT should be pushed down as an aggregation pipeline ($sort + $limit)
+query II
+EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*scan_method.*aggregate.*pipeline.*\\$sort.*\\$limit.*
+
+# Correctness: should still return 2 rows
+query I
+SELECT COUNT(*) FROM (SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2);
+----
+2
+
+statement ok
+DETACH mongo_test;
+

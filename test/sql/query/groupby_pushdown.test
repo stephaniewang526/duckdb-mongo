@@ -1,0 +1,27 @@
+# name: test/sql/query/groupby_pushdown.test
+# description: Verify simple GROUP BY aggregates are pushed down via MongoDB aggregation pipeline
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# GROUP BY should be pushed down as an aggregation pipeline ($group)
+query II
+EXPLAIN SELECT active, COUNT(*) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:.*MONGO_SCAN.*scan_method.*aggregate.*pipeline.*\\$group.*
+
+# Correctness check (order enforced in DuckDB, not pushed down)
+query II
+SELECT active, COUNT(*) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	1
+true	3
+
+statement ok
+DETACH mongo_test;
+
