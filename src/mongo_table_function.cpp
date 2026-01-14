@@ -9,6 +9,9 @@
 #include "duckdb/planner/filter/in_filter.hpp"
 #include "duckdb/planner/filter/null_filter.hpp"
 #include "duckdb/planner/filter/conjunction_filter.hpp"
+#include "duckdb/planner/filter/optional_filter.hpp"
+#include "duckdb/planner/filter/dynamic_filter.hpp"
+#include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/execution/operator/helper/physical_limit.hpp"
 #include "duckdb/execution/operator/helper/physical_streaming_limit.hpp"
@@ -1761,6 +1764,32 @@ bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &filter, c
 			if (appended_count > 0) {
 				doc.append(bsoncxx::builder::basic::kvp("$or", or_array.extract()));
 			}
+		}
+		break;
+	}
+	case TableFilterType::STRUCT_EXTRACT: {
+		// StructFilter for nested field access - MongoDB supports via dot notation
+		const auto &struct_filter = filter.Cast<StructFilter>();
+		string nested_path = column_name + "." + struct_filter.child_name;
+		if (struct_filter.child_filter) {
+			return ConvertSingleFilterToMongo(*struct_filter.child_filter, nested_path, column_type);
+		}
+		break;
+	}
+	case TableFilterType::OPTIONAL_FILTER: {
+		// OptionalFilter wraps another filter (often IN filters from semi-join pushdown)
+		// Unwrap and process the child filter
+		const auto &opt_filter = filter.Cast<OptionalFilter>();
+		if (opt_filter.child_filter) {
+			return ConvertSingleFilterToMongo(*opt_filter.child_filter, column_name, column_type);
+		}
+		break;
+	}
+	case TableFilterType::DYNAMIC_FILTER: {
+		// DynamicFilter contains a ConstantFilter that can be updated at runtime
+		const auto &dyn_filter = filter.Cast<DynamicFilter>();
+		if (dyn_filter.filter_data && dyn_filter.filter_data->initialized && dyn_filter.filter_data->filter) {
+			return ConvertSingleFilterToMongo(*dyn_filter.filter_data->filter, column_name, column_type);
 		}
 		break;
 	}
