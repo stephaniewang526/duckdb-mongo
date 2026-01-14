@@ -42,10 +42,7 @@ SELECT * FROM atlas_db.mydb.mycollection;
 - Automatic schema inference (samples 100 documents by default, used as fallback)
 - Nested document flattening with underscore-separated names
 - BSON type mapping to DuckDB SQL types
-- **Filter pushdown**: WHERE clauses pushed to MongoDB to leverage indexes
-- **Complex filter pushdown**: Function calls and column-to-column comparisons pushed to MongoDB using `$expr` queries
-- **Projection pushdown**: Only fetches columns used in SELECT clause
-- **Filter prune**: Excludes filter columns from projections when filters are pushed down
+- **Query pushdown**: Filters, projections, and limits pushed to MongoDB to reduce data transfer (see [Pushdown Strategy](#pushdown-strategy))
 - Optional MongoDB query filters
 - Read-only (write support may be added)
 
@@ -882,6 +879,49 @@ EXPLAIN SELECT name FROM mongo_test.duckdb_mongo_test.users WHERE LENGTH(name) >
 The plan shows `MONGO_SCAN` directly (no `FILTER` operator above it), indicating the complex filter was pushed down to MongoDB.
 
 > **Note:** Complex filter pushdown works alongside simple filter pushdown. Simple filters are always handled by TableFilter pushdown for optimal performance, while complex filters are handled by `$expr` pushdown when needed.
+
+#### Semi-Join IN Filter Pushdown
+
+Semi-join IN filter pushdown enables DuckDB to push IN filters from semi-joins (subqueries) to MongoDB as `$in` queries. This optimization works automatically when DuckDB's JoinFilterPushdownOptimizer determines that a semi-join's build side is small enough to push as an IN filter.
+
+**How it works:**
+
+- DuckDB builds a hash table from the subquery (e.g., `SELECT p_partkey FROM part WHERE p_name LIKE 'forest%'`)
+- If the hash table is small, DuckDB generates an IN filter with the matching values
+- The extension pushes this IN filter to MongoDB as a `$in` query
+
+**Example:**
+
+```sql
+-- Query with IN subquery (semi-join)
+SELECT ps_suppkey, ps_availqty
+FROM partsupp
+WHERE ps_partkey IN (
+    SELECT p_partkey FROM part WHERE p_name LIKE 'forest%'
+);
+```
+
+The extension automatically pushes the `ps_partkey IN (...)` filter to MongoDB as:
+
+```json
+{"ps_partkey": {"$in": [123, 456, 789, ...]}}
+```
+
+**Supported Filter Types:**
+
+The extension supports the following DuckDB filter types for pushdown:
+
+| Filter Type | MongoDB Equivalent | Description |
+|-------------|-------------------|-------------|
+| `CONSTANT_COMPARISON` | `$eq`, `$ne`, `$lt`, `$lte`, `$gt`, `$gte` | Basic comparisons |
+| `IN_FILTER` | `$in` | Value in list |
+| `IS_NULL` | `{field: null}` | Null check |
+| `IS_NOT_NULL` | `{$ne: null}` | Not null check |
+| `CONJUNCTION_AND` | Merged conditions | AND of filters |
+| `CONJUNCTION_OR` | `$or` / `$in` | OR of filters |
+| `STRUCT_EXTRACT` | Dot notation (`a.b.c`) | Nested field access |
+| `OPTIONAL_FILTER` | Unwraps child | Semi-join IN pushdown |
+| `DYNAMIC_FILTER` | Unwraps child | Runtime filter pushdown |
 
 ## Contributing
 
