@@ -11,7 +11,9 @@
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_limit.hpp"
 #include "duckdb/planner/operator/logical_order.hpp"
+#include "duckdb/planner/operator/logical_projection.hpp"
 #include "duckdb/planner/operator/logical_top_n.hpp"
+#include "duckdb/planner/expression/bound_cast_expression.hpp"
 
 #include <bsoncxx/builder/basic/array.hpp>
 #include <bsoncxx/builder/basic/document.hpp>
@@ -167,8 +169,75 @@ static bool IsSimpleColumnRef(const Expression &expr, idx_t expected_table_index
 	return true;
 }
 
-static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const LogicalGet &get, idx_t &out_child_col,
-                                 string &out_kind) {
+static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalProjection *> &projections,
+                                   idx_t scan_table_index, idx_t &out_col_idx) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+		return false;
+	}
+	auto binding = expr.Cast<BoundColumnRefExpression>().binding;
+	for (auto *proj : projections) {
+		if (!proj) {
+			continue;
+		}
+		if (binding.table_index != proj->table_index) {
+			continue;
+		}
+		if (binding.column_index >= proj->expressions.size()) {
+			return false;
+		}
+		auto &proj_expr = *proj->expressions[binding.column_index];
+		if (proj_expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+			return false;
+		}
+		binding = proj_expr.Cast<BoundColumnRefExpression>().binding;
+	}
+	if (binding.table_index != scan_table_index) {
+		return false;
+	}
+	out_col_idx = binding.column_index;
+	return true;
+}
+
+static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<LogicalProjection *> &projections,
+                                           const MongoScanData &data, idx_t scan_table_index, idx_t &out_col_idx) {
+	if (!ResolveColumnRefToScan(expr, projections, scan_table_index, out_col_idx)) {
+		return false;
+	}
+	const auto expr_name = expr.GetName();
+	if (out_col_idx < data.column_names.size() && StringUtil::CIEquals(data.column_names[out_col_idx], expr_name)) {
+		return true;
+	}
+	// If the expression name is qualified (e.g., schema.table.col), accept the resolved index.
+	if (expr_name.find('.') != string::npos) {
+		return true;
+	}
+	// Otherwise fallback to name-based mapping if the resolved index doesn't match.
+	for (idx_t i = 0; i < data.column_names.size(); i++) {
+		if (StringUtil::CIEquals(data.column_names[i], expr_name)) {
+			out_col_idx = i;
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool GetOrderColumnName(const Expression &expr, string &name) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		name = expr.GetName();
+		return true;
+	}
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CAST) {
+		auto &cast = expr.Cast<BoundCastExpression>();
+		if (cast.child) {
+			return GetOrderColumnName(*cast.child, name);
+		}
+	}
+	return false;
+}
+
+static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const LogicalGet &get,
+                                 const vector<LogicalProjection *> &projections, const MongoScanData &data,
+                                 idx_t &out_child_col, string &out_kind) {
 	// No DISTINCT/FILTER/ORDER BY in MVP
 	if (aggr.IsDistinct() || aggr.filter || aggr.order_bys) {
 		return false;
@@ -187,7 +256,7 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const Log
 			return false;
 		}
 		idx_t col_idx;
-		if (!IsSimpleColumnRef(*aggr.children[0], get.table_index, col_idx)) {
+		if (!ResolveColumnRefToScanWithName(*aggr.children[0], projections, data, get.table_index, col_idx)) {
 			return false;
 		}
 		out_kind = "count";
@@ -199,7 +268,7 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const Log
 			return false;
 		}
 		idx_t col_idx;
-		if (!IsSimpleColumnRef(*aggr.children[0], get.table_index, col_idx)) {
+		if (!ResolveColumnRefToScanWithName(*aggr.children[0], projections, data, get.table_index, col_idx)) {
 			return false;
 		}
 		out_kind = fname;
@@ -248,22 +317,22 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 	}
 
 	auto &order = topn.orders[0];
-	if (order.null_order != OrderByNullType::ORDER_DEFAULT) {
-		// Keep conservative semantics in MVP
+
+	if (!order.expression) {
 		return false;
 	}
 
-	// Must be ORDER BY _id
-	if (!order.expression || order.expression->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
+	// Allow a chain of projections between TOP_N and the scan
+	vector<LogicalProjection *> projections;
+	LogicalOperator *scan_child = topn.children[0].get();
+	while (scan_child && scan_child->type == LogicalOperatorType::LOGICAL_PROJECTION && scan_child->children.size() == 1) {
+		projections.push_back(&scan_child->Cast<LogicalProjection>());
+		scan_child = scan_child->children[0].get();
+	}
+	if (!scan_child || scan_child->type != LogicalOperatorType::LOGICAL_GET) {
 		return false;
 	}
-	auto &colref = order.expression->Cast<BoundColumnRefExpression>();
-
-	auto &child = *topn.children[0];
-	if (child.type != LogicalOperatorType::LOGICAL_GET) {
-		return false;
-	}
-	auto &get = child.Cast<LogicalGet>();
+	auto &get = scan_child->Cast<LogicalGet>();
 	if (!IsMongoScan(get)) {
 		return false;
 	}
@@ -273,11 +342,11 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 	}
 
 	// Ensure the sort key corresponds to the _id column in the scan output
-	if (colref.binding.table_index != get.table_index) {
+	idx_t order_col_idx;
+	if (!ResolveColumnRefToScanWithName(*order.expression, projections, *bind, get.table_index, order_col_idx)) {
 		return false;
 	}
-	auto sort_col_idx = colref.binding.column_index;
-	if (sort_col_idx >= bind->column_names.size() || !StringUtil::CIEquals(bind->column_names[sort_col_idx], "_id")) {
+	if (order_col_idx >= bind->column_names.size() || !StringUtil::CIEquals(bind->column_names[order_col_idx], "_id")) {
 		return false;
 	}
 
@@ -290,7 +359,7 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 
 	get.bind_data = std::move(new_bind);
 	get.named_parameters["pipeline"] = Value(pipeline_json);
-	// Remove TopN operator (pipeline already sorts/limits)
+	// Remove TopN operator (pipeline already sorts/limits); keep any projection chain
 	node = std::move(topn.children[0]);
 	return true;
 }
@@ -363,11 +432,18 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		return false;
 	}
 
-	auto &child = *aggr.children[0];
-	if (child.type != LogicalOperatorType::LOGICAL_GET) {
+	// DuckDB can insert a projection below an aggregate (e.g., COUNT(*) uses a constant projection to avoid materializing
+	// any columns). Allow a chain of projections between aggregate and the scan.
+	vector<LogicalProjection *> projections;
+	LogicalOperator *scan_child = aggr.children[0].get();
+	while (scan_child && scan_child->type == LogicalOperatorType::LOGICAL_PROJECTION && scan_child->children.size() == 1) {
+		projections.push_back(&scan_child->Cast<LogicalProjection>());
+		scan_child = scan_child->children[0].get();
+	}
+	if (!scan_child || scan_child->type != LogicalOperatorType::LOGICAL_GET) {
 		return false;
 	}
-	auto &get = child.Cast<LogicalGet>();
+	auto &get = scan_child->Cast<LogicalGet>();
 	if (!IsMongoScan(get)) {
 		return false;
 	}
@@ -378,9 +454,10 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 
 	// GROUP BY keys must be direct column refs
 	vector<pair<string, string>> group_fields; // {output_field_name, mongo_path}
+	vector<LogicalType> group_types;
 	for (auto &gexpr : aggr.groups) {
 		idx_t col_idx;
-		if (!IsSimpleColumnRef(*gexpr, get.table_index, col_idx)) {
+		if (!ResolveColumnRefToScanWithName(*gexpr, projections, *bind, get.table_index, col_idx)) {
 			return false;
 		}
 		if (col_idx >= bind->column_names.size()) {
@@ -392,6 +469,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 			return false;
 		}
 		group_fields.emplace_back(col_name, it->second);
+		group_types.push_back(gexpr->return_type);
 	}
 
 	// Aggregate expressions must be supported and direct
@@ -400,18 +478,9 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 	vector<LogicalType> out_types;
 
 	// Output schema: group keys first
-	for (auto &gf : group_fields) {
-		out_names.push_back(gf.first);
-		// Use the existing DuckDB type for that column
-		auto idx = bind->column_name_to_mongo_path.find(gf.first);
-		(void)idx;
-		// Find type by name index lookup
-		auto name_it = std::find(bind->column_names.begin(), bind->column_names.end(), gf.first);
-		if (name_it == bind->column_names.end()) {
-			return false;
-		}
-		auto type_idx = static_cast<idx_t>(name_it - bind->column_names.begin());
-		out_types.push_back(bind->column_types[type_idx]);
+	for (idx_t i = 0; i < group_fields.size(); i++) {
+		out_names.push_back(group_fields[i].first);
+		out_types.push_back(group_types[i]);
 	}
 
 	bool ungrouped = group_fields.empty();
@@ -423,7 +492,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 			auto &b = aggr.expressions[0]->Cast<BoundAggregateExpression>();
 			idx_t child_col;
 			string kind;
-			if (IsSupportedAggregate(b, get, child_col, kind) && kind == "count_star") {
+			if (IsSupportedAggregate(b, get, projections, *bind, child_col, kind) && kind == "count_star") {
 				count_star_only = true;
 			}
 		}
@@ -437,7 +506,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 			auto &b = aggr.expressions[i]->Cast<BoundAggregateExpression>();
 			idx_t child_col;
 			string kind;
-			if (!IsSupportedAggregate(b, get, child_col, kind)) {
+			if (!IsSupportedAggregate(b, get, projections, *bind, child_col, kind)) {
 				return false;
 			}
 
@@ -513,6 +582,13 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 	replacement->named_parameters = get.named_parameters;
 	replacement->named_parameters["pipeline"] = Value(pipeline_json);
 	replacement->parameters = get.parameters;
+	// Ensure all columns are exposed for binding resolution
+	vector<ColumnIndex> column_ids;
+	column_ids.reserve(out_names.size());
+	for (idx_t i = 0; i < out_names.size(); i++) {
+		column_ids.emplace_back(i);
+	}
+	replacement->SetColumnIds(std::move(column_ids));
 
 	// Add binding rewrite rule: aggregate_index bindings now refer to group_index with an offset.
 	BindingMapRule rule;

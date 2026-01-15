@@ -2855,6 +2855,22 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		}
 	}
 
+	// If the pipeline returned no rows for a COUNT(*) pushdown, emit a single 0 row.
+	if (state.current && state.end && *state.current == *state.end && !bind_data.pipeline_json.empty() &&
+	    output.ColumnCount() == 1 && state.requested_column_names.size() == 1 &&
+	    StringUtil::CIEquals(state.requested_column_names[0], "count")) {
+		if (output.data.empty()) {
+			output.Initialize(context, *column_types);
+		}
+		auto &vec = output.data[0];
+		vec.SetVectorType(VectorType::FLAT_VECTOR);
+		FlatVector::GetData<int64_t>(vec)[0] = 0;
+		FlatVector::SetNull(vec, 0, false);
+		output.SetCardinality(1);
+		state.finished = true;
+		return;
+	}
+
 	// Scan documents and flatten into output
 	while (count < max_count && *state.current != *state.end) {
 		auto doc = **state.current;

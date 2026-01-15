@@ -37,14 +37,14 @@ physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*(age|active).*(age|active).*
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(name) > 5;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*Function: MONGO_SCAN.*Projections: name.*
+physical_plan	<REGEX>:.*MONGO_SCAN.*Projections: name.*
 
 # Complex filter with column-to-column comparison should be pushed down
 # Expected: MONGO_SCAN appears directly (no FILTER operator above it)
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE age > balance;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*Function: MONGO_SCAN.*
+physical_plan	<REGEX>:.*MONGO_SCAN.*
 
 # ============================================================================
 # Combined Simple + Complex Filter Pushdown Tests

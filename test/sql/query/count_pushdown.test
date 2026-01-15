@@ -13,7 +13,7 @@ ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE 
 query II
 EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*scan_method.*aggregate.*pipeline.*\\$count.*
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
 
 query I
 SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
