@@ -27,6 +27,8 @@
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/builder/basic/array.hpp>
 #include <bsoncxx/json.hpp>
+#include <mongocxx/pipeline.hpp>
+#include <mongocxx/options/aggregate.hpp>
 #include <algorithm>
 #include <sstream>
 #include <cctype>
@@ -36,6 +38,33 @@
 #include <unordered_set>
 
 namespace duckdb {
+
+InsertionOrderPreservingMap<string> MongoScanToString(TableFunctionToStringInput &input) {
+	InsertionOrderPreservingMap<string> result;
+	if (!input.bind_data) {
+		return result;
+	}
+	auto &data = input.bind_data->Cast<MongoScanData>();
+
+	result["database"] = data.database_name;
+	result["collection"] = data.collection_name;
+	if (!data.pipeline_json.empty()) {
+		result["scan_method"] = "aggregate";
+		// Keep EXPLAIN readable by truncating the pipeline
+		const idx_t max_len = 400;
+		if (data.pipeline_json.size() > max_len) {
+			result["pipeline"] = data.pipeline_json.substr(0, max_len) + "...";
+		} else {
+			result["pipeline"] = data.pipeline_json;
+		}
+	} else {
+		result["scan_method"] = "find";
+		if (!data.filter_query.empty()) {
+			result["filter"] = data.filter_query;
+		}
+	}
+	return result;
+}
 
 // Helper function to normalize JSON output
 static std::string NormalizeJson(const std::string &json) {
@@ -1475,6 +1504,10 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 		result->filter_query = input.named_parameters["filter"].GetValue<string>();
 	}
 
+	if (input.named_parameters.find("pipeline") != input.named_parameters.end()) {
+		result->pipeline_json = input.named_parameters["pipeline"].GetValue<string>();
+	}
+
 	if (input.named_parameters.find("sample_size") != input.named_parameters.end()) {
 		result->sample_size = input.named_parameters["sample_size"].GetValue<int64_t>();
 	}
@@ -2497,6 +2530,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	result->database_name = data.database_name;
 	result->collection_name = data.collection_name;
 	result->filter_query = data.filter_query;
+	result->pipeline_json = data.pipeline_json;
 
 	// Projection pushdown: collect columns needed (selected + filter columns that couldn't be pushed down)
 	unordered_set<idx_t> needed_column_indices;
@@ -2528,6 +2562,51 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Get collection
 	auto db = result->connection->client[result->database_name];
 	auto collection = db[result->collection_name];
+
+	// If a pipeline is provided, execute an aggregation pipeline instead of find().
+	// Note: for pipeline results that do not match the underlying collection schema,
+	// callers must provide an explicit schema via the `columns` parameter.
+	if (!result->pipeline_json.empty()) {
+		// Populate requested columns so the scan only materializes columns DuckDB asked for.
+		// (We do not automatically inject a $project stage into the pipeline here, because the pipeline may already
+		// change the shape of the documents. Optimizer-generated pipelines should include $project explicitly when
+		// beneficial.)
+		for (column_t col_id : input.column_ids) {
+			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
+				result->requested_column_indices.push_back(col_id);
+				result->requested_column_names.push_back(data.column_names[col_id]);
+				result->requested_column_types.push_back(data.column_types[col_id]);
+			}
+		}
+
+		// Parse JSON array pipeline by wrapping it in a document.
+		// Example input: '[{"$match":{"x":1}},{"$count":"count"}]'
+		auto wrapped = StringUtil::Format("{\"pipeline\": %s}", result->pipeline_json);
+		try {
+			result->pipeline_document = bsoncxx::from_json(wrapped);
+		} catch (const std::exception &e) {
+			throw InvalidInputException("mongo_scan \"pipeline\" contains invalid JSON: %s", e.what());
+		}
+		auto pipeline_elem = result->pipeline_document.view()["pipeline"];
+		if (!pipeline_elem || pipeline_elem.type() != bsoncxx::type::k_array) {
+			throw InvalidInputException("mongo_scan \"pipeline\" must be a JSON array of stage documents");
+		}
+
+		mongocxx::pipeline pipeline;
+		auto stages = pipeline_elem.get_array().value;
+		for (auto it = stages.begin(); it != stages.end(); ++it) {
+			if (it->type() != bsoncxx::type::k_document) {
+				throw InvalidInputException("mongo_scan \"pipeline\" stages must be JSON objects");
+			}
+			pipeline.append_stage(it->get_document().value);
+		}
+
+		mongocxx::options::aggregate agg_opts;
+		result->cursor = make_uniq<mongocxx::cursor>(collection.aggregate(pipeline, agg_opts));
+		result->current = make_uniq<mongocxx::cursor::iterator>(result->cursor->begin());
+		result->end = make_uniq<mongocxx::cursor::iterator>(result->cursor->end());
+		return std::move(result);
+	}
 
 	// Build query from pushed-down filters first to determine which filters were successfully pushed down
 	bsoncxx::document::view_or_value query_filter;
@@ -2807,6 +2886,22 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		    !vec.GetAuxiliary()) {
 			vec.Initialize(false, STANDARD_VECTOR_SIZE);
 		}
+	}
+
+	// If the pipeline returned no rows for a COUNT(*) pushdown, emit a single 0 row.
+	if (state.current && state.end && *state.current == *state.end && !bind_data.pipeline_json.empty() &&
+	    output.ColumnCount() == 1 && state.requested_column_names.size() == 1 &&
+	    StringUtil::CIEquals(state.requested_column_names[0], "count")) {
+		if (output.data.empty()) {
+			output.Initialize(context, *column_types);
+		}
+		auto &vec = output.data[0];
+		vec.SetVectorType(VectorType::FLAT_VECTOR);
+		FlatVector::GetData<int64_t>(vec)[0] = 0;
+		FlatVector::SetNull(vec, 0, false);
+		output.SetCardinality(1);
+		state.finished = true;
+		return;
 	}
 
 	// Scan documents and flatten into output

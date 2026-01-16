@@ -4,6 +4,7 @@
 #include "mongo_storage_extension.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_table_function.hpp"
+#include "mongo_optimizer.hpp"
 #include "mongo_secrets.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
@@ -11,6 +12,7 @@
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/expression.hpp"
+#include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
 
@@ -22,6 +24,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output);
 void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
                                 vector<unique_ptr<Expression>> &filters);
+InsertionOrderPreservingMap<string> MongoScanToString(TableFunctionToStringInput &input);
 
 static void LoadInternal(ExtensionLoader &loader) {
 	// Register MongoDB table function
@@ -32,6 +35,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
 	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
 	mongo_scan.named_parameters["columns"] = LogicalType::ANY;
+	mongo_scan.named_parameters["pipeline"] = LogicalType::VARCHAR;
 
 	// Enable filter pushdown
 	mongo_scan.filter_pushdown = true;
@@ -41,6 +45,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	mongo_scan.filter_prune = true;
 	// Enable complex filter pushdown
 	mongo_scan.pushdown_complex_filter = MongoPushdownComplexFilter;
+	// EXPLAIN visibility
+	mongo_scan.to_string = MongoScanToString;
 
 	// Create TableFunctionInfo with description and comment
 	TableFunctionSet mongo_scan_set("mongo_scan");
@@ -101,6 +107,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	auto &db = loader.GetDatabaseInstance();
 	auto &config = DBConfig::GetConfig(db);
 	config.storage_extensions["mongo"] = MongoStorageExtension::Create();
+
+	// Register optimizer extension (runs after DuckDB built-in optimizers)
+	OptimizerExtension opt_ext;
+	opt_ext.optimize_function = MongoOptimizerOptimize;
+	config.optimizer_extensions.push_back(opt_ext);
 }
 
 void MongoExtension::Load(ExtensionLoader &loader) {

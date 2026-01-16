@@ -1,0 +1,25 @@
+# name: test/sql/query/count_pushdown.test
+# description: Verify COUNT(*) is pushed down via MongoDB aggregation pipeline
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# COUNT(*) should be pushed down as an aggregation pipeline ($count) and executed server-side
+query II
+EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
+
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
+----
+3
+
+statement ok
+DETACH mongo_test;
+
