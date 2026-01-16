@@ -2582,7 +2582,11 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		// Parse JSON array pipeline by wrapping it in a document.
 		// Example input: '[{"$match":{"x":1}},{"$count":"count"}]'
 		auto wrapped = StringUtil::Format("{\"pipeline\": %s}", result->pipeline_json);
-		result->pipeline_document = bsoncxx::from_json(wrapped);
+		try {
+			result->pipeline_document = bsoncxx::from_json(wrapped);
+		} catch (const std::exception &e) {
+			throw InvalidInputException("mongo_scan \"pipeline\" contains invalid JSON: %s", e.what());
+		}
 		auto pipeline_elem = result->pipeline_document.view()["pipeline"];
 		if (!pipeline_elem || pipeline_elem.type() != bsoncxx::type::k_array) {
 			throw InvalidInputException("mongo_scan \"pipeline\" must be a JSON array of stage documents");

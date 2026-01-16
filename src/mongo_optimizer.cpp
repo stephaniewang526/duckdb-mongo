@@ -325,7 +325,8 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 	// Allow a chain of projections between TOP_N and the scan
 	vector<LogicalProjection *> projections;
 	LogicalOperator *scan_child = topn.children[0].get();
-	while (scan_child && scan_child->type == LogicalOperatorType::LOGICAL_PROJECTION && scan_child->children.size() == 1) {
+	while (scan_child && scan_child->type == LogicalOperatorType::LOGICAL_PROJECTION &&
+	       scan_child->children.size() == 1) {
 		projections.push_back(&scan_child->Cast<LogicalProjection>());
 		scan_child = scan_child->children[0].get();
 	}
@@ -365,9 +366,9 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 }
 
 static string BuildAggregatePipelineJson(const LogicalGet &get, const MongoScanData &data,
-                                        const vector<pair<string, string>> &group_fields,
-                                        const vector<pair<string, bsoncxx::document::value>> &aggs,
-                                        bool ungrouped_count_only) {
+                                         const vector<pair<string, string>> &group_fields,
+                                         const vector<pair<string, bsoncxx::document::value>> &aggs,
+                                         bool ungrouped_count_only) {
 	vector<bsoncxx::document::value> stages;
 
 	auto match_doc = BuildMatchFromExistingFilters(get, data);
@@ -432,11 +433,12 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		return false;
 	}
 
-	// DuckDB can insert a projection below an aggregate (e.g., COUNT(*) uses a constant projection to avoid materializing
-	// any columns). Allow a chain of projections between aggregate and the scan.
+	// DuckDB can insert a projection below an aggregate (e.g., COUNT(*) uses a constant projection to avoid
+	// materializing any columns). Allow a chain of projections between aggregate and the scan.
 	vector<LogicalProjection *> projections;
 	LogicalOperator *scan_child = aggr.children[0].get();
-	while (scan_child && scan_child->type == LogicalOperatorType::LOGICAL_PROJECTION && scan_child->children.size() == 1) {
+	while (scan_child && scan_child->type == LogicalOperatorType::LOGICAL_PROJECTION &&
+	       scan_child->children.size() == 1) {
 		projections.push_back(&scan_child->Cast<LogicalProjection>());
 		scan_child = scan_child->children[0].get();
 	}
@@ -632,4 +634,3 @@ void MongoOptimizerOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOp
 }
 
 } // namespace duckdb
-

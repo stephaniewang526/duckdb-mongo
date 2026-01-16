@@ -9,4 +9,3 @@ namespace duckdb {
 void MongoOptimizerOptimize(OptimizerExtensionInput &input, unique_ptr<LogicalOperator> &plan);
 
 } // namespace duckdb
-
