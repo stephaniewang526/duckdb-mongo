@@ -696,11 +696,13 @@ The extension uses a selective pushdown strategy: **filter at MongoDB** (reduce 
 **Pushed Down to MongoDB:**
 - WHERE clauses (automatic conversion to MongoDB `$match` queries)
 - Column projections (only columns used in SELECT are fetched)
-- LIMIT clauses (when directly above table scan)
+- LIMIT clauses: simple `LIMIT N` (cursor limit) and `ORDER BY _id LIMIT N` (aggregation pipeline)
 - Manual `filter` parameter (for MongoDB-specific operators like `$elemMatch`)
+- Aggregations: `COUNT(*)`, `COUNT(col)`, `SUM`, `MIN`, `MAX`, `AVG` with optional `GROUP BY` (see [Aggregation Pushdown](#aggregation-pushdown))
 
 **Kept in DuckDB:**
-- Aggregations, joins, window functions, CTEs, subqueries, ORDER BY
+- Joins, window functions, CTEs, subqueries
+- ORDER BY (except `ORDER BY _id LIMIT N` which is pushed down)
 
 #### Automatic Filter Pushdown
 
@@ -780,14 +782,14 @@ SELECT * FROM mongo_test.duckdb_mongo_test.users WHERE address_city = 'New York'
 
 #### LIMIT Pushdown
 
-LIMIT is automatically pushed down when directly above the table scan (without ORDER BY, aggregations, or joins):
+LIMIT is automatically pushed down when directly above the table scan:
 
 ```sql
 SELECT * FROM mongo_test.duckdb_mongo_test.orders LIMIT 10;
 -- MongoDB uses: .limit(10)
 ```
 
-**Limitation:** When ORDER BY is present, DuckDB uses `TOP_N` which handles ordering in DuckDB, so LIMIT is not pushed down.
+> **Note:** When `ORDER BY _id` is present with LIMIT, the extension uses TopN pushdown via aggregation pipeline (see [TopN Pushdown](#topn-pushdown)). For other ORDER BY columns, sorting is performed in DuckDB after fetching data.
 
 #### Projection Pushdown
 
@@ -922,6 +924,76 @@ The extension supports the following DuckDB filter types for pushdown:
 | `STRUCT_EXTRACT` | Dot notation (`a.b.c`) | Nested field access |
 | `OPTIONAL_FILTER` | Unwraps child | Semi-join IN pushdown |
 | `DYNAMIC_FILTER` | Unwraps child | Runtime filter pushdown |
+
+#### Aggregation Pushdown
+
+Aggregation pushdown enables pushing `COUNT`, `SUM`, `MIN`, `MAX`, `AVG` aggregates (with optional `GROUP BY`) to MongoDB as aggregation pipelines. This reduces data transfer by computing aggregates server-side rather than fetching all documents to DuckDB.
+
+**Supported Aggregates:**
+
+| Function | MongoDB Pipeline | Notes |
+|----------|-----------------|-------|
+| `COUNT(*)` | `$count` | Pushed as optimized `$count` stage |
+| `COUNT(col)` | `$group` + `$sum` + `$cond` | Counts non-null values |
+| `SUM(col)` | `$group` + `$sum` | |
+| `MIN(col)` | `$group` + `$min` | |
+| `MAX(col)` | `$group` + `$max` | |
+| `AVG(col)` | `$group` + `$avg` | |
+
+**Requirements for Aggregation Pushdown:**
+
+- Aggregate functions must use direct column references (no expressions like `SUM(price * quantity)`)
+- `GROUP BY` keys must be direct column references
+- No `DISTINCT`, `FILTER`, or `ORDER BY` within aggregates
+- Single grouping set only (no `GROUPING SETS`, `ROLLUP`, or `CUBE`)
+
+**Examples:**
+
+```sql
+-- COUNT(*) pushed down as $count pipeline
+SELECT COUNT(*) FROM mongo_test.duckdb_mongo_test.users WHERE active = true;
+-- MongoDB pipeline: [{$match: {active: true}}, {$count: "count"}]
+
+-- GROUP BY with aggregates pushed down as $group pipeline
+SELECT status, COUNT(*), SUM(total) FROM mongo_test.duckdb_mongo_test.orders GROUP BY status;
+-- MongoDB pipeline: [{$group: {_id: {status: "$status"}, __agg0: {$sum: 1}, __agg1: {$sum: "$total"}}}, ...]
+```
+
+**Use `EXPLAIN` to verify aggregation pushdown:**
+
+```sql
+EXPLAIN SELECT COUNT(*) FROM mongo_test.duckdb_mongo_test.users;
+```
+
+The plan shows `MONGO_SCAN` with `scan_method: aggregate` and `pipeline` containing `$count` or `$group`, indicating the aggregation was pushed down to MongoDB.
+
+#### TopN Pushdown
+
+TopN pushdown enables pushing `ORDER BY _id LIMIT N` queries to MongoDB as aggregation pipelines with `$sort` and `$limit` stages. This is particularly efficient for paginated queries ordered by the indexed `_id` field.
+
+**Requirements for TopN Pushdown:**
+
+- Must order by `_id` column only (MongoDB's indexed primary key)
+- Must have a `LIMIT` clause (no offset)
+- No intermediate operations between `ORDER BY` and the table scan (projections are allowed)
+
+**Example:**
+
+```sql
+-- TopN pushed down as $sort + $limit pipeline
+SELECT _id, name FROM mongo_test.duckdb_mongo_test.users ORDER BY _id LIMIT 10;
+-- MongoDB pipeline: [{$sort: {_id: 1}}, {$limit: 10}]
+```
+
+**Use `EXPLAIN` to verify TopN pushdown:**
+
+```sql
+EXPLAIN SELECT _id FROM mongo_test.duckdb_mongo_test.users ORDER BY _id LIMIT 5;
+```
+
+The plan shows `MONGO_SCAN` with `scan_method: aggregate` and `pipeline` containing `$sort` and `$limit`, indicating the TopN operation was pushed down to MongoDB.
+
+> **Note:** TopN pushdown is conservative and only applies to `ORDER BY _id` queries. This ensures MongoDB can use its indexed `_id` field efficiently. Other ORDER BY columns are processed in DuckDB after fetching data.
 
 ## Contributing
 
