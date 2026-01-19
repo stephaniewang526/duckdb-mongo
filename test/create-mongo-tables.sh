@@ -197,6 +197,13 @@ db.orders.insertMany([
   }
 ]);
 
+// Create collection with Decimal128 values for precision testing
+db.decimal_test.insertMany([
+  { name: 'item1', amount: NumberDecimal('123.45'), category: 'A' },
+  { name: 'item2', amount: NumberDecimal('999.99'), category: 'A' },
+  { name: 'item3', amount: NumberDecimal('50.00'), category: 'B' }
+]);
+
 // Create empty collection for testing (just create the collection, don't insert empty array)
 db.createCollection('empty_collection');
 
@@ -470,7 +477,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types"
+echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types"
 echo ""
 
 # Export environment variables for tests

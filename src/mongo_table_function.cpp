@@ -128,6 +128,8 @@ LogicalType InferTypeFromBSONElement(const ElementType &element) {
 	case bsoncxx::type::k_int64:
 		return LogicalType::BIGINT;
 	case bsoncxx::type::k_double:
+	case bsoncxx::type::k_decimal128:
+		// Decimal128 maps to DOUBLE (accepts precision loss for numeric operations)
 		return LogicalType::DOUBLE;
 	case bsoncxx::type::k_bool:
 		return LogicalType::BOOLEAN;
@@ -150,6 +152,18 @@ LogicalType InferTypeFromBSONElement(const ElementType &element) {
 		return LogicalType::VARCHAR; // Arrays stored as JSON string
 	case bsoncxx::type::k_document:
 		return LogicalType::VARCHAR; // Nested documents stored as JSON string
+	case bsoncxx::type::k_null:
+	case bsoncxx::type::k_undefined:
+		return LogicalType::VARCHAR; // NULL/undefined - type will be refined from other documents
+	case bsoncxx::type::k_regex:
+	case bsoncxx::type::k_code:
+	case bsoncxx::type::k_codewscope:
+	case bsoncxx::type::k_symbol:
+	case bsoncxx::type::k_timestamp:
+	case bsoncxx::type::k_dbpointer:
+	case bsoncxx::type::k_minkey:
+	case bsoncxx::type::k_maxkey:
+		return LogicalType::VARCHAR; // Special types as string representation
 	default:
 		return LogicalType::VARCHAR; // Default to VARCHAR for unknown types
 	}
@@ -1432,7 +1446,7 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::HUGEINT: {
-			// MongoDB doesn't have 128-bit integers, so we convert from int32/int64/double
+			// MongoDB doesn't have 128-bit integers, so we convert from int32/int64/double/decimal128
 			hugeint_t huge_val = 0;
 			if (element.type() == bsoncxx::type::k_int32) {
 				huge_val = hugeint_t(element.get_int32().value);
@@ -1440,6 +1454,15 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 				huge_val = hugeint_t(element.get_int64().value);
 			} else if (element.type() == bsoncxx::type::k_double) {
 				huge_val = hugeint_t(static_cast<int64_t>(element.get_double().value));
+			} else if (element.type() == bsoncxx::type::k_decimal128) {
+				// Parse Decimal128 string and convert to hugeint (truncating decimal part)
+				auto dec_str = element.get_decimal128().value.to_string();
+				try {
+					double d = std::stod(dec_str);
+					huge_val = hugeint_t(static_cast<int64_t>(d));
+				} catch (...) {
+					huge_val = 0;
+				}
 			}
 			FlatVector::GetData<hugeint_t>(output.data[col_idx])[row_idx] = huge_val;
 			break;
@@ -1452,6 +1475,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 				double_val = static_cast<double>(element.get_int32().value);
 			} else if (element.type() == bsoncxx::type::k_int64) {
 				double_val = static_cast<double>(element.get_int64().value);
+			} else if (element.type() == bsoncxx::type::k_decimal128) {
+				auto dec_str = element.get_decimal128().value.to_string();
+				try {
+					double_val = std::stod(dec_str);
+				} catch (...) {
+					double_val = 0.0;
+				}
 			}
 			FlatVector::GetData<double>(output.data[col_idx])[row_idx] = double_val;
 			break;
