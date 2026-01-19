@@ -38,12 +38,14 @@ SELECT * FROM atlas_db.mydb.mycollection;
 - Direct SQL queries over MongoDB collections (no ETL/export)
 - **MongoDB Atlas support** via connection strings or DuckDB Secrets
 - **TLS/SSL encryption** for secure connections
-- **Flexible schema handling**: User-provided schemas, `__schema` document support (Atlas SQL compatibility), or automatic schema inference
-- Automatic schema inference (samples 100 documents by default, used as fallback)
+- **Flexible schema handling**: User-provided schemas, `__schema` document support (Atlas SQL compatibility), or automatic inference
 - Nested document flattening with underscore-separated names
-- BSON type mapping to DuckDB SQL types
-- **Query pushdown**: Filters, projections, and limits pushed to MongoDB to reduce data transfer (see [Pushdown Strategy](#pushdown-strategy))
-- Optional MongoDB query filters
+- **BSON type mapping** including Decimal128, arrays, and nested documents (see [BSON Type Mapping](#bson-type-mapping))
+- **Query pushdown** to reduce data transfer (see [Pushdown Strategy](#pushdown-strategy)):
+  - Filters (WHERE clauses, complex expressions, semi-join IN)
+  - Projections (SELECT columns)
+  - Limits and TopN (ORDER BY _id LIMIT N)
+  - Aggregations (COUNT, SUM, MIN, MAX, AVG with GROUP BY)
 - Read-only (write support may be added)
 
 ## Installation
@@ -418,13 +420,15 @@ After clearing the cache, the next query will re-scan schemas and re-infer colle
 | `String` | `VARCHAR` | |
 | `Int32`, `Int64` | `BIGINT` | |
 | `Double` | `DOUBLE` | |
+| `Decimal128` | `DOUBLE` | High-precision decimals converted to double (may lose precision) |
 | `Boolean` | `BOOLEAN` | |
 | `Date` | `TIMESTAMP` / `DATE` | `DATE` if time component is midnight UTC, else `TIMESTAMP` |
-| `ObjectId` | `VARCHAR` | |
+| `ObjectId` | `VARCHAR` | 24-character hex string |
 | `Binary` | `BLOB` | |
-| `Array` | `LIST` or `VARCHAR` | `LIST(STRUCT(...))` for arrays of objects, `LIST(primitive)` for arrays of primitives, `LIST(LIST(...))` for arrays of arrays (including `LIST(LIST(STRUCT(...)))` for arrays of arrays of objects) (see [Array Handling](#array-handling) below) |
-| `Document` | `VARCHAR` | Stored as JSON string |
-| Other | `VARCHAR` | Default for unknown types |
+| `Array` | `LIST` or `VARCHAR` | `LIST(STRUCT(...))` for arrays of objects, `LIST(primitive)` for arrays of primitives, `LIST(LIST(...))` for arrays of arrays (see [Array Handling](#array-handling)) |
+| `Document` | `VARCHAR` | Nested documents stored as JSON string |
+| `Null`, `Undefined` | `VARCHAR` | Type refined from other documents during inference |
+| `Regex`, `Code`, `Symbol`, `Timestamp`, `MinKey`, `MaxKey` | `VARCHAR` | Special BSON types stored as string representation |
 
 ### Schema Resolution
 
@@ -558,10 +562,10 @@ When neither user-provided schema nor `__schema` document is available, the exte
 
 - Read-only
 - Schema inference (when used as fallback) samples documents and may miss fields that don't appear in the sample
-- Schema re-inferred per query when using `mongo_scan` table function directly (schema is cached when using `ATTACH` catalog views; use `mongo_clear_cache()` to invalidate cache)
-- **Nested documents in arrays**: Nested documents within array elements are stored as VARCHAR (JSON strings) rather than nested STRUCT types
+- Schema re-inferred per query when using `mongo_scan` directly (cached when using `ATTACH`; use `mongo_clear_cache()` to invalidate)
+- **Decimal128 precision**: Converted to DOUBLE, which may lose precision for high-precision decimal values
+- **Nested documents in arrays**: Stored as VARCHAR (JSON strings) rather than nested STRUCT types
   - Example: `items: [{product: 'Laptop', specs: {cpu: 'Intel', ram: '16GB'}}]` → `specs` field is VARCHAR, not STRUCT
-  - This is a simplification to avoid complex nested STRUCT handling
 
 ## Advanced Topics
 
