@@ -560,6 +560,8 @@ SELECT * FROM mongo_scan(
 ```
 
 > **Note:** Schema enforcement only applies when an explicit schema is provided (via `columns` or `__schema`). Inferred schemas use permissive behavior regardless of the `schema_mode` setting.
+>
+> When using `dropmalformed` or `failfast`, certain query optimizations are disabled to ensure accurate validation (e.g., aggregate pushdowns run in DuckDB instead of MongoDB, and all schema columns are fetched for validation). For best performance with large collections, use `permissive` (the default) unless strict enforcement is required.
 
 #### Array Handling
 
