@@ -174,6 +174,84 @@ LogicalType InferTypeFromBSON(const bsoncxx::document::element &element) {
 	return InferTypeFromBSONElement(element);
 }
 
+// Parse schema mode from string (case-insensitive)
+SchemaMode ParseSchemaMode(const std::string &mode_str) {
+	std::string lower = StringUtil::Lower(mode_str);
+	if (lower == "permissive") {
+		return SchemaMode::PERMISSIVE;
+	} else if (lower == "dropmalformed" || lower == "drop_malformed") {
+		return SchemaMode::DROPMALFORMED;
+	} else if (lower == "failfast" || lower == "fail_fast") {
+		return SchemaMode::FAILFAST;
+	}
+	throw InvalidInputException("Invalid schema_mode '%s'. Valid options: 'permissive', 'dropmalformed', 'failfast'",
+	                            mode_str);
+}
+
+// Convert schema mode to string for display
+std::string SchemaModeToString(SchemaMode mode) {
+	switch (mode) {
+	case SchemaMode::PERMISSIVE:
+		return "permissive";
+	case SchemaMode::DROPMALFORMED:
+		return "dropmalformed";
+	case SchemaMode::FAILFAST:
+		return "failfast";
+	default:
+		return "unknown";
+	}
+}
+
+// Get BSON type name for error messages
+static std::string GetBSONTypeName(bsoncxx::type type) {
+	switch (type) {
+	case bsoncxx::type::k_double:
+		return "double";
+	case bsoncxx::type::k_string:
+		return "string";
+	case bsoncxx::type::k_document:
+		return "document";
+	case bsoncxx::type::k_array:
+		return "array";
+	case bsoncxx::type::k_binary:
+		return "binary";
+	case bsoncxx::type::k_undefined:
+		return "undefined";
+	case bsoncxx::type::k_oid:
+		return "objectId";
+	case bsoncxx::type::k_bool:
+		return "bool";
+	case bsoncxx::type::k_date:
+		return "date";
+	case bsoncxx::type::k_null:
+		return "null";
+	case bsoncxx::type::k_regex:
+		return "regex";
+	case bsoncxx::type::k_dbpointer:
+		return "dbPointer";
+	case bsoncxx::type::k_code:
+		return "javascript";
+	case bsoncxx::type::k_symbol:
+		return "symbol";
+	case bsoncxx::type::k_codewscope:
+		return "javascriptWithScope";
+	case bsoncxx::type::k_int32:
+		return "int32";
+	case bsoncxx::type::k_timestamp:
+		return "timestamp";
+	case bsoncxx::type::k_int64:
+		return "int64";
+	case bsoncxx::type::k_decimal128:
+		return "decimal128";
+	case bsoncxx::type::k_minkey:
+		return "minKey";
+	case bsoncxx::type::k_maxkey:
+		return "maxKey";
+	default:
+		return "unknown";
+	}
+}
+
 LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	if (types.empty()) {
 		return LogicalType::VARCHAR;
@@ -1083,9 +1161,94 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 	}
 }
 
-void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &column_names,
+// Check if BSON type is compatible with expected DuckDB type
+// Returns true if compatible, false if type mismatch
+static bool IsBSONTypeCompatible(bsoncxx::type bson_type, LogicalTypeId expected_type) {
+	// NULL and undefined are always compatible (will be set to NULL)
+	if (bson_type == bsoncxx::type::k_null || bson_type == bsoncxx::type::k_undefined) {
+		return true;
+	}
+
+	switch (expected_type) {
+	case LogicalTypeId::VARCHAR:
+		// VARCHAR accepts everything (we convert to string)
+		return true;
+	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::HUGEINT:
+		// Numeric types accept int32, int64, double, decimal128
+		return bson_type == bsoncxx::type::k_int32 || bson_type == bsoncxx::type::k_int64 ||
+		       bson_type == bsoncxx::type::k_double || bson_type == bsoncxx::type::k_decimal128;
+	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::FLOAT:
+		// Float types accept numeric types
+		return bson_type == bsoncxx::type::k_double || bson_type == bsoncxx::type::k_int32 ||
+		       bson_type == bsoncxx::type::k_int64 || bson_type == bsoncxx::type::k_decimal128;
+	case LogicalTypeId::BOOLEAN:
+		return bson_type == bsoncxx::type::k_bool;
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+		return bson_type == bsoncxx::type::k_date;
+	case LogicalTypeId::BLOB:
+		return bson_type == bsoncxx::type::k_binary;
+	case LogicalTypeId::LIST:
+		return bson_type == bsoncxx::type::k_array;
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP:
+		return bson_type == bsoncxx::type::k_document;
+	default:
+		// For other types, be permissive
+		return true;
+	}
+}
+
+bool FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &column_names,
                      const vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
-                     const unordered_map<string, string> &column_name_to_mongo_path) {
+                     const unordered_map<string, string> &column_name_to_mongo_path, SchemaMode schema_mode,
+                     bool has_explicit_schema) {
+	// Track if we've seen any schema violations in this row (for DROPMALFORMED)
+	bool row_has_violation = false;
+
+	// Helper to handle schema violation based on mode
+	auto handleSchemaViolation = [&](const std::string &field_name, const std::string &expected_type,
+	                                 bsoncxx::type actual_bson_type, idx_t col_idx) -> bool {
+		// Only enforce if explicit schema was provided
+		if (!has_explicit_schema) {
+			return true; // Continue processing
+		}
+
+		std::string actual_type = GetBSONTypeName(actual_bson_type);
+
+		switch (schema_mode) {
+		case SchemaMode::FAILFAST: {
+			// Try to get document _id for error context
+			std::string doc_id = "<unknown>";
+			auto id_elem = doc["_id"];
+			if (id_elem) {
+				if (id_elem.type() == bsoncxx::type::k_oid) {
+					doc_id = id_elem.get_oid().value.to_string();
+				} else if (id_elem.type() == bsoncxx::type::k_string) {
+					doc_id = std::string(id_elem.get_string().value);
+				}
+			}
+			throw InvalidInputException(
+			    "Schema violation in document _id='%s': Field '%s' expected type %s but found %s.\n"
+			    "Hint: Use schema_mode='permissive' to replace with NULL, or 'dropmalformed' to skip bad rows.",
+			    doc_id, field_name, expected_type, actual_type);
+		}
+		case SchemaMode::DROPMALFORMED:
+			row_has_violation = true;
+			return false; // Stop processing this row
+		case SchemaMode::PERMISSIVE:
+		default:
+			// Set to NULL and continue
+			FlatVector::SetNull(output.data[col_idx], row_idx, true);
+			return true; // Continue processing other columns
+		}
+	};
 	// Helper to get element from document by MongoDB path (uses dot notation)
 	auto getElementByMongoPath = [&](const std::string &mongo_path) -> bsoncxx::document::element {
 		std::vector<std::string> segments;
@@ -1434,6 +1597,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::BIGINT: {
+			// Check type compatibility
+			if (!IsBSONTypeCompatible(element.type(), LogicalTypeId::BIGINT)) {
+				if (!handleSchemaViolation(column_name, "BIGINT", element.type(), col_idx)) {
+					return false; // DROPMALFORMED: skip this row
+				}
+				break; // PERMISSIVE: already set to NULL
+			}
 			int64_t int_val = 0;
 			if (element.type() == bsoncxx::type::k_int32) {
 				int_val = element.get_int32().value;
@@ -1446,6 +1616,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::HUGEINT: {
+			// Check type compatibility
+			if (!IsBSONTypeCompatible(element.type(), LogicalTypeId::HUGEINT)) {
+				if (!handleSchemaViolation(column_name, "HUGEINT", element.type(), col_idx)) {
+					return false;
+				}
+				break;
+			}
 			// MongoDB doesn't have 128-bit integers, so we convert from int32/int64/double/decimal128
 			hugeint_t huge_val = 0;
 			if (element.type() == bsoncxx::type::k_int32) {
@@ -1468,6 +1645,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::DOUBLE: {
+			// Check type compatibility
+			if (!IsBSONTypeCompatible(element.type(), LogicalTypeId::DOUBLE)) {
+				if (!handleSchemaViolation(column_name, "DOUBLE", element.type(), col_idx)) {
+					return false;
+				}
+				break;
+			}
 			double double_val = 0.0;
 			if (element.type() == bsoncxx::type::k_double) {
 				double_val = element.get_double().value;
@@ -1487,6 +1671,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::BOOLEAN: {
+			// Check type compatibility
+			if (!IsBSONTypeCompatible(element.type(), LogicalTypeId::BOOLEAN)) {
+				if (!handleSchemaViolation(column_name, "BOOLEAN", element.type(), col_idx)) {
+					return false;
+				}
+				break;
+			}
 			bool bool_val = false;
 			if (element.type() == bsoncxx::type::k_bool) {
 				bool_val = element.get_bool().value;
@@ -1495,6 +1686,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::DATE: {
+			// Check type compatibility
+			if (!IsBSONTypeCompatible(element.type(), LogicalTypeId::DATE)) {
+				if (!handleSchemaViolation(column_name, "DATE", element.type(), col_idx)) {
+					return false;
+				}
+				break;
+			}
 			date_t date_val;
 			if (element.type() == bsoncxx::type::k_date) {
 				auto mongo_date = element.get_date();
@@ -1509,6 +1707,13 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			break;
 		}
 		case LogicalTypeId::TIMESTAMP: {
+			// Check type compatibility
+			if (!IsBSONTypeCompatible(element.type(), LogicalTypeId::TIMESTAMP)) {
+				if (!handleSchemaViolation(column_name, "TIMESTAMP", element.type(), col_idx)) {
+					return false;
+				}
+				break;
+			}
 			timestamp_t ts_val;
 			if (element.type() == bsoncxx::type::k_date) {
 				auto date_val = element.get_date();
@@ -1526,6 +1731,8 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 		}
 		}
 	}
+
+	return !row_has_violation;
 }
 
 unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBindInput &input,
@@ -1555,6 +1762,11 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 		result->sample_size = input.named_parameters["sample_size"].GetValue<int64_t>();
 	}
 
+	// Parse schema_mode parameter
+	if (input.named_parameters.find("schema_mode") != input.named_parameters.end()) {
+		result->schema_mode = ParseSchemaMode(input.named_parameters["schema_mode"].GetValue<string>());
+	}
+
 	// Ensure MongoDB instance is initialized
 	GetMongoInstance();
 
@@ -1576,12 +1788,16 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 		ParseSchemaFromColumnsParameter(context, input.named_parameters["columns"], result->column_names,
 		                                result->column_types, result->column_name_to_mongo_path);
 		schema_set = true;
+		result->has_explicit_schema = true; // Explicit schema via columns parameter
 	}
 
 	// If no user-provided schema, check for __schema document (Atlas SQL)
 	if (!schema_set) {
 		schema_set = ParseSchemaFromAtlasDocument(collection, result->column_names, result->column_types,
 		                                          result->column_name_to_mongo_path);
+		if (schema_set) {
+			result->has_explicit_schema = true; // Explicit schema via __schema document
+		}
 	}
 
 	// If still no schema, infer from documents
@@ -2952,9 +3168,17 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		auto doc = **state.current;
 		vector<string> trunc_names(column_names->begin(), column_names->begin() + num_cols_to_use);
 		vector<LogicalType> trunc_types(column_types->begin(), column_types->begin() + num_cols_to_use);
-		FlattenDocument(doc, trunc_names, trunc_types, output, count, bind_data.column_name_to_mongo_path);
+
+		// FlattenDocument returns false if row should be skipped (DROPMALFORMED mode)
+		bool row_valid = FlattenDocument(doc, trunc_names, trunc_types, output, count,
+		                                 bind_data.column_name_to_mongo_path, bind_data.schema_mode,
+		                                 bind_data.has_explicit_schema);
 		++(*state.current);
-		count++;
+		if (row_valid) {
+			count++;
+		}
+		// If row_valid is false (DROPMALFORMED), we skip incrementing count,
+		// effectively dropping this row from the output
 	}
 
 	output.SetCardinality(count);
@@ -2972,6 +3196,7 @@ void RegisterMongoTableFunction(DatabaseInstance &db) {
 	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
 	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
 	mongo_scan.named_parameters["columns"] = LogicalType::ANY;
+	mongo_scan.named_parameters["schema_mode"] = LogicalType::VARCHAR;
 
 	// Register the table function using ExtensionLoader
 	// Note: This should be called from ExtensionLoader::Load, not directly

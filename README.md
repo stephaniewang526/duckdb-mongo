@@ -392,6 +392,7 @@ SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
 - `filter` (optional): MongoDB query filter as JSON string (e.g., `'{"status": "active"}'`)
 - `sample_size` (optional): Number of documents to sample for schema inference (default: 100)
 - `columns` (optional): Explicit schema definition as a struct (see [Schema Resolution](#schema-resolution) for details)
+- `schema_mode` (optional): How to handle type mismatches: `'permissive'` (default), `'dropmalformed'`, or `'failfast'` (see [Schema Enforcement Modes](#schema-enforcement-modes))
 
 ### Cache Management
 
@@ -522,6 +523,43 @@ When neither user-provided schema nor `__schema` document is available, the exte
   - BOOLEAN/TIMESTAMP if ≥70% match
   - Defaults to VARCHAR
 - **Missing Fields**: NULL values
+
+#### Schema Enforcement Modes
+
+When using an explicit schema (via `columns` parameter or `__schema` document), you can control how the extension handles documents that don't match the expected types using the `schema_mode` parameter:
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `permissive` | Set invalid fields to NULL (default) | Exploratory analysis, fault-tolerant pipelines |
+| `dropmalformed` | Skip entire rows with schema violations | Data quality filtering, clean datasets |
+| `failfast` | Throw error immediately on first mismatch | Production pipelines, data contracts |
+
+**Examples:**
+
+```sql
+-- PERMISSIVE (default): Invalid values become NULL
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'mydb', 'mycol',
+    columns := {'name': 'VARCHAR', 'age': 'INTEGER'},
+    schema_mode := 'permissive'
+);
+
+-- DROPMALFORMED: Skip rows where 'age' is not a valid integer
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'mydb', 'mycol',
+    columns := {'name': 'VARCHAR', 'age': 'INTEGER'},
+    schema_mode := 'dropmalformed'
+);
+
+-- FAILFAST: Throw error if any document has invalid 'age' value
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'mydb', 'mycol',
+    columns := {'name': 'VARCHAR', 'age': 'INTEGER'},
+    schema_mode := 'failfast'
+);
+```
+
+> **Note:** Schema enforcement only applies when an explicit schema is provided (via `columns` or `__schema`). Inferred schemas use permissive behavior regardless of the `schema_mode` setting.
 
 #### Array Handling
 
