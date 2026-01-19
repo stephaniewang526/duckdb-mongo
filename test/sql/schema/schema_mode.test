@@ -207,3 +207,43 @@ SELECT * FROM mongo_scan(
 );
 ----
 Schema violation
+
+# ============================================================================
+# Test COUNT(*) with schema enforcement
+# ============================================================================
+
+# COUNT(*) with PERMISSIVE returns all rows (default behavior)
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'permissive'
+);
+----
+3
+
+# COUNT(*) with DROPMALFORMED returns only valid rows
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'dropmalformed'
+);
+----
+1
+
+# COUNT(*) with FAILFAST throws error on first mismatch
+statement error
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'failfast'
+);
+----
+Schema violation

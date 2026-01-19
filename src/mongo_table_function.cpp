@@ -1205,6 +1205,82 @@ static bool IsBSONTypeCompatible(bsoncxx::type bson_type, LogicalTypeId expected
 	}
 }
 
+// Validation-only function that checks schema compatibility without writing to output
+// Used for COUNT(*) queries where we need to validate but not materialize data
+static bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const vector<string> &column_names,
+                                   const vector<LogicalType> &column_types,
+                                   const unordered_map<string, string> &column_name_to_mongo_path,
+                                   SchemaMode schema_mode) {
+	for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
+		const auto &column_name = column_names[col_idx];
+		const auto &column_type = column_types[col_idx];
+
+		// Skip complex types (LIST, STRUCT) - they have their own conversion logic
+		if (column_type.id() == LogicalTypeId::LIST || column_type.id() == LogicalTypeId::STRUCT) {
+			continue;
+		}
+
+		// Get the MongoDB path for this column
+		std::string mongo_field_name = column_name;
+		auto path_it = column_name_to_mongo_path.find(column_name);
+		if (path_it != column_name_to_mongo_path.end()) {
+			mongo_field_name = path_it->second;
+		}
+
+		// Find the element
+		bsoncxx::document::element element;
+		if (mongo_field_name.find('.') != std::string::npos) {
+			// Nested path - navigate through
+			std::vector<std::string> segments;
+			std::istringstream iss(mongo_field_name);
+			std::string segment;
+			while (std::getline(iss, segment, '.')) {
+				segments.push_back(segment);
+			}
+			bsoncxx::document::view current = doc;
+			for (size_t i = 0; i < segments.size(); i++) {
+				element = current[segments[i]];
+				if (!element) {
+					break;
+				}
+				if (i < segments.size() - 1 && element.type() == bsoncxx::type::k_document) {
+					current = element.get_document().value;
+				}
+			}
+		} else {
+			element = doc[mongo_field_name];
+		}
+
+		// Missing field is OK (will be NULL)
+		if (!element || element.type() == bsoncxx::type::k_null ||
+		    element.type() == bsoncxx::type::k_undefined) {
+			continue;
+		}
+
+		// Check type compatibility for scalar types
+		if (!IsBSONTypeCompatible(element.type(), column_type.id())) {
+			if (schema_mode == SchemaMode::FAILFAST) {
+				std::string doc_id = "<unknown>";
+				auto id_elem = doc["_id"];
+				if (id_elem) {
+					if (id_elem.type() == bsoncxx::type::k_oid) {
+						doc_id = id_elem.get_oid().value.to_string();
+					} else if (id_elem.type() == bsoncxx::type::k_string) {
+						doc_id = std::string(id_elem.get_string().value);
+					}
+				}
+				throw InvalidInputException(
+				    "Schema violation in document _id='%s': Field '%s' expected type %s but found %s.\n"
+				    "Hint: Use schema_mode='permissive' to replace with NULL, or 'dropmalformed' to skip bad rows.",
+				    doc_id, column_name, column_type.ToString(), GetBSONTypeName(element.type()));
+			}
+			// DROPMALFORMED: signal that row should be skipped
+			return false;
+		}
+	}
+	return true;
+}
+
 bool FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &column_names,
                      const vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const unordered_map<string, string> &column_name_to_mongo_path, SchemaMode schema_mode,
@@ -3036,6 +3112,28 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Build MongoDB find options
 	mongocxx::options::find opts;
 
+	// When schema enforcement is needed, ensure ALL schema columns are fetched from MongoDB
+	// so validation can check all columns, not just the ones DuckDB requested
+	bool needs_schema_enforcement =
+	    data.has_explicit_schema && data.schema_mode != SchemaMode::PERMISSIVE;
+	if (needs_schema_enforcement) {
+		// Add all schema columns to requested_column_indices if not already present
+		for (idx_t col_idx = 0; col_idx < data.column_names.size(); col_idx++) {
+			bool already_added = false;
+			for (idx_t req_idx : result->requested_column_indices) {
+				if (req_idx == col_idx) {
+					already_added = true;
+					break;
+				}
+			}
+			if (!already_added) {
+				result->requested_column_indices.push_back(col_idx);
+				result->requested_column_names.push_back(data.column_names[col_idx]);
+				result->requested_column_types.push_back(data.column_types[col_idx]);
+			}
+		}
+	}
+
 	// Build MongoDB projection from requested columns
 	if (!result->requested_column_indices.empty()) {
 		vector<column_t> projection_column_ids(result->requested_column_indices.begin(),
@@ -3102,7 +3200,10 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	const idx_t max_count = STANDARD_VECTOR_SIZE;
 
 	// Handle COUNT(*) queries: output has 1 column but may have filter columns in requested_column_names
-	if (output.ColumnCount() == 1 && state.requested_column_names.size() > 1) {
+	// Skip this optimization if schema enforcement is needed (non-PERMISSIVE mode with explicit schema)
+	bool needs_schema_enforcement =
+	    bind_data.has_explicit_schema && bind_data.schema_mode != SchemaMode::PERMISSIVE;
+	if (output.ColumnCount() == 1 && state.requested_column_names.size() > 1 && !needs_schema_enforcement) {
 		state.requested_column_names.clear();
 		state.requested_column_types.clear();
 		state.requested_column_indices.clear();
@@ -3169,10 +3270,23 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		vector<string> trunc_names(column_names->begin(), column_names->begin() + num_cols_to_use);
 		vector<LogicalType> trunc_types(column_types->begin(), column_types->begin() + num_cols_to_use);
 
-		// FlattenDocument returns false if row should be skipped (DROPMALFORMED mode)
-		bool row_valid = FlattenDocument(doc, trunc_names, trunc_types, output, count,
-		                                 bind_data.column_name_to_mongo_path, bind_data.schema_mode,
-		                                 bind_data.has_explicit_schema);
+		// For schema enforcement, always validate ALL schema columns
+		// (DuckDB might not request all columns, e.g., for COUNT(*))
+		bool row_valid = true;
+		if (needs_schema_enforcement) {
+			// Validate full schema first (checks all columns, doesn't write to output)
+			row_valid = ValidateDocumentSchema(doc, bind_data.column_names, bind_data.column_types,
+			                                   bind_data.column_name_to_mongo_path, bind_data.schema_mode);
+		}
+
+		// If row is valid (or no enforcement needed), flatten requested columns to output
+		if (row_valid && num_cols_to_use > 0) {
+			// Flatten only the requested columns to output
+			// Note: FlattenDocument also does schema checks, but we've already validated above
+			row_valid = FlattenDocument(doc, trunc_names, trunc_types, output, count,
+			                            bind_data.column_name_to_mongo_path, bind_data.schema_mode,
+			                            bind_data.has_explicit_schema);
+		}
 		++(*state.current);
 		if (row_valid) {
 			count++;
