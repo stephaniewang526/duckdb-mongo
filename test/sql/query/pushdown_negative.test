@@ -1,0 +1,114 @@
+# name: test/sql/query/pushdown_negative.test
+# description: Verify unsupported patterns fall back to DuckDB execution (not pushed to MongoDB)
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ============================================================================
+# COUNT(DISTINCT col) - NOT pushed down (DuckDB handles DISTINCT)
+# ============================================================================
+
+# COUNT(DISTINCT col) requires distinct aggregation which is not pushed down
+# Plan should show HASH_GROUP_BY or UNGROUPED_AGGREGATE operator (not just MONGO_SCAN)
+query II
+EXPLAIN SELECT COUNT(DISTINCT active) FROM mongo_test.users;
+----
+physical_plan	<REGEX>:[\s\S]*(UNGROUPED_AGGREGATE|HASH_GROUP_BY)[\s\S]*MONGO_SCAN[\s\S]*
+
+# Correctness: 2 distinct values (true, false)
+query I
+SELECT COUNT(DISTINCT active) FROM mongo_test.users;
+----
+2
+
+# ============================================================================
+# ORDER BY non-_id column - NOT pushed down
+# ============================================================================
+
+# ORDER BY on columns other than _id should NOT be pushed down
+# Plan should show TOP_N operator above MONGO_SCAN
+query II
+EXPLAIN SELECT name FROM mongo_test.users ORDER BY age LIMIT 2;
+----
+physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+
+# Correctness: youngest 2 users (Bob=25, Diana=28)
+query I
+SELECT name FROM mongo_test.users ORDER BY age LIMIT 2;
+----
+Bob
+Diana
+
+# ORDER BY name should also fall back
+query II
+EXPLAIN SELECT name FROM mongo_test.users ORDER BY name LIMIT 2;
+----
+physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+
+query I
+SELECT name FROM mongo_test.users ORDER BY name LIMIT 2;
+----
+Alice
+Bob
+
+# ============================================================================
+# ORDER BY _id with OFFSET - NOT pushed down
+# ============================================================================
+
+# OFFSET is not supported in TopN pushdown
+query II
+EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2 OFFSET 1;
+----
+physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+
+# ============================================================================
+# GROUP BY with expression (not direct column ref) - NOT pushed down
+# ============================================================================
+
+# GROUP BY on expression should fall back to DuckDB
+query II
+EXPLAIN SELECT age // 10 AS age_decade, COUNT(*) FROM mongo_test.users GROUP BY age // 10;
+----
+physical_plan	<REGEX>:[\s\S]*HASH_GROUP_BY[\s\S]*MONGO_SCAN[\s\S]*
+
+# Correctness check (using integer division //)
+# Ages: 25, 28, 30, 35 -> decades: 2, 2, 3, 3
+query II
+SELECT age // 10 AS age_decade, COUNT(*) FROM mongo_test.users GROUP BY age // 10 ORDER BY age_decade;
+----
+2	2
+3	2
+
+# ============================================================================
+# Aggregate with FILTER clause - NOT pushed down
+# ============================================================================
+
+# Aggregate with FILTER clause should fall back
+query II
+EXPLAIN SELECT COUNT(*) FILTER (WHERE age > 30) FROM mongo_test.users;
+----
+physical_plan	<REGEX>:[\s\S]*UNGROUPED_AGGREGATE[\s\S]*MONGO_SCAN[\s\S]*
+
+# Correctness: only Charlie (35) has age > 30
+query I
+SELECT COUNT(*) FILTER (WHERE age > 30) FROM mongo_test.users;
+----
+1
+
+# ============================================================================
+# Multiple ORDER BY columns - NOT pushed down
+# ============================================================================
+
+# Multiple ORDER BY keys are not supported in TopN pushdown
+query II
+EXPLAIN SELECT name FROM mongo_test.users ORDER BY active, _id LIMIT 2;
+----
+physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+
+statement ok
+DETACH mongo_test;

@@ -1431,6 +1431,19 @@ void FlattenDocument(const bsoncxx::document::view &doc, const vector<string> &c
 			FlatVector::GetData<int64_t>(output.data[col_idx])[row_idx] = int_val;
 			break;
 		}
+		case LogicalTypeId::HUGEINT: {
+			// MongoDB doesn't have 128-bit integers, so we convert from int32/int64/double
+			hugeint_t huge_val = 0;
+			if (element.type() == bsoncxx::type::k_int32) {
+				huge_val = hugeint_t(element.get_int32().value);
+			} else if (element.type() == bsoncxx::type::k_int64) {
+				huge_val = hugeint_t(element.get_int64().value);
+			} else if (element.type() == bsoncxx::type::k_double) {
+				huge_val = hugeint_t(static_cast<int64_t>(element.get_double().value));
+			}
+			FlatVector::GetData<hugeint_t>(output.data[col_idx])[row_idx] = huge_val;
+			break;
+		}
 		case LogicalTypeId::DOUBLE: {
 			double double_val = 0.0;
 			if (element.type() == bsoncxx::type::k_double) {

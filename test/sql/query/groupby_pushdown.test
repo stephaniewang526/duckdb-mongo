@@ -1,5 +1,5 @@
 # name: test/sql/query/groupby_pushdown.test
-# description: Verify simple GROUP BY aggregates are pushed down via MongoDB aggregation pipeline
+# description: Verify GROUP BY aggregates are pushed down via MongoDB aggregation pipeline
 # group: [query]
 
 require mongo
@@ -8,6 +8,10 @@ require-env MONGODB_TEST_DATABASE_AVAILABLE
 
 statement ok
 ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ============================================================================
+# Basic GROUP BY with COUNT(*)
+# ============================================================================
 
 # GROUP BY should be pushed down as an aggregation pipeline ($group)
 query II
@@ -21,6 +25,114 @@ SELECT active, COUNT(*) FROM mongo_test.users GROUP BY active ORDER BY active;
 ----
 false	1
 true	3
+
+# ============================================================================
+# GROUP BY with SUM aggregate
+# ============================================================================
+
+# SUM should be pushed down as $sum in $group stage
+query II
+EXPLAIN SELECT active, SUM(balance) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$sum[\s\S]*
+
+query IR
+SELECT active, SUM(balance) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	500.25
+true	3751.25
+
+# ============================================================================
+# GROUP BY with AVG aggregate
+# ============================================================================
+
+# AVG should be pushed down as $avg in $group stage
+query II
+EXPLAIN SELECT active, AVG(age) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$avg[\s\S]*
+
+query IR
+SELECT active, AVG(age) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	25.0
+true	31.0
+
+# ============================================================================
+# GROUP BY with MIN/MAX aggregates
+# ============================================================================
+
+# MIN should be pushed down as $min in $group stage
+query II
+EXPLAIN SELECT active, MIN(age) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$min[\s\S]*
+
+query II
+SELECT active, MIN(age) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	25
+true	28
+
+# MAX should be pushed down as $max in $group stage
+query II
+EXPLAIN SELECT active, MAX(age) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$max[\s\S]*
+
+query II
+SELECT active, MAX(age) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	25
+true	35
+
+# ============================================================================
+# GROUP BY with multiple aggregates
+# ============================================================================
+
+# Multiple aggregates in one query should all be pushed down
+query II
+EXPLAIN SELECT active, COUNT(*), SUM(balance), AVG(age) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
+
+query IIRR
+SELECT active, COUNT(*), SUM(balance), AVG(age) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	1	500.25	25.0
+true	3	3751.25	31.0
+
+# ============================================================================
+# GROUP BY with filter (combined $match + $group)
+# ============================================================================
+
+# Filter + GROUP BY should produce $match followed by $group
+query II
+EXPLAIN SELECT active, COUNT(*) FROM mongo_test.users WHERE age > 25 GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$group[\s\S]*
+
+# age > 25: Alice(30), Charlie(35), Diana(28) - all active=true
+query II
+SELECT active, COUNT(*) FROM mongo_test.users WHERE age > 25 GROUP BY active ORDER BY active;
+----
+true	3
+
+# ============================================================================
+# GROUP BY on products collection
+# ============================================================================
+
+query II
+SELECT category, COUNT(*) FROM mongo_test.products GROUP BY category ORDER BY category;
+----
+Electronics	2
+Furniture	1
+
+query IR
+SELECT category, SUM(price) FROM mongo_test.products GROUP BY category ORDER BY category;
+----
+Electronics	1029.98
+Furniture	299.99
 
 statement ok
 DETACH mongo_test;

@@ -1,0 +1,109 @@
+# name: test/sql/query/pushdown_edge_cases.test
+# description: Edge case tests for MongoDB aggregation pushdown
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ============================================================================
+# Empty result set - COUNT should return 0
+# ============================================================================
+
+# COUNT(*) with filter that matches nothing should return 0
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE age > 100;
+----
+0
+
+# Verify it's still pushed down
+query II
+EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE age > 100;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
+
+# ============================================================================
+# Empty collection - aggregates should work correctly
+# ============================================================================
+
+# COUNT on empty collection should return 0
+query I
+SELECT COUNT(*) FROM mongo_test.empty_collection;
+----
+0
+
+# ============================================================================
+# Combined filter + aggregate pushdown
+# ============================================================================
+
+# Filter + COUNT should produce $match + $count in pipeline
+query II
+EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE active = true AND age > 25;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$count[\s\S]*
+
+# Correctness: active=true AND age>25: Alice(30), Charlie(35), Diana(28) = 3
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE active = true AND age > 25;
+----
+3
+
+# Filter + GROUP BY should produce $match + $group in pipeline
+query II
+EXPLAIN SELECT active, SUM(balance) FROM mongo_test.users WHERE age >= 28 GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$group[\s\S]*
+
+# Correctness: age >= 28: Alice(30), Charlie(35), Diana(28) - all active=true
+query IR
+SELECT active, SUM(balance) FROM mongo_test.users WHERE age >= 28 GROUP BY active ORDER BY active;
+----
+true	3751.25
+
+# ============================================================================
+# Single row result
+# ============================================================================
+
+# GROUP BY that produces single group
+query II
+SELECT active, COUNT(*) FROM mongo_test.users WHERE name = 'Alice' GROUP BY active;
+----
+true	1
+
+# ============================================================================
+# TopN without filter (basic case)
+# ============================================================================
+
+# TopN without filter should work correctly
+query II
+EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 1;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$sort[\s\S]*\$limit[\s\S]*
+
+# Should return first _id
+query I
+SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 1;
+----
+507f1f77bcf86cd799439011
+
+# ============================================================================
+# Aggregate on products collection
+# ============================================================================
+
+# Test aggregates on different collection
+query I
+SELECT COUNT(*) FROM mongo_test.products WHERE in_stock = true;
+----
+2
+
+query IR
+SELECT in_stock, AVG(price) FROM mongo_test.products GROUP BY in_stock ORDER BY in_stock;
+----
+false	299.99
+true	514.99
+
+statement ok
+DETACH mongo_test;

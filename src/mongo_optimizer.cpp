@@ -207,13 +207,21 @@ static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<
 	if (out_col_idx < data.column_names.size() && StringUtil::CIEquals(data.column_names[out_col_idx], expr_name)) {
 		return true;
 	}
-	// If the expression name is qualified (e.g., schema.table.col), accept the resolved index.
+	// If the expression name is qualified (e.g., schema.table.col), extract the column name
+	// and verify it matches the resolved column, or fall back to name-based lookup.
+	string col_name = expr_name;
 	if (expr_name.find('.') != string::npos) {
-		return true;
+		// Extract the last component (column name) from qualified name
+		auto last_dot = expr_name.rfind('.');
+		col_name = expr_name.substr(last_dot + 1);
+		// Check if the resolved index matches the extracted column name
+		if (out_col_idx < data.column_names.size() && StringUtil::CIEquals(data.column_names[out_col_idx], col_name)) {
+			return true;
+		}
 	}
-	// Otherwise fallback to name-based mapping if the resolved index doesn't match.
+	// Fallback to name-based mapping if the resolved index doesn't match.
 	for (idx_t i = 0; i < data.column_names.size(); i++) {
-		if (StringUtil::CIEquals(data.column_names[i], expr_name)) {
+		if (StringUtil::CIEquals(data.column_names[i], col_name)) {
 			out_col_idx = i;
 			return true;
 		}

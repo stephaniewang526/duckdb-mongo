@@ -9,17 +9,73 @@ require-env MONGODB_TEST_DATABASE_AVAILABLE
 statement ok
 ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
 
+# ============================================================================
+# ORDER BY _id ASC LIMIT - pushed down as $sort + $limit
+# ============================================================================
+
 # ORDER BY _id LIMIT should be pushed down as an aggregation pipeline ($sort + $limit)
 query II
 EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2;
 ----
 physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$sort[\s\S]*\$limit[\s\S]*
 
-# Correctness: should still return 2 rows
+# Correctness: should return 2 rows
 query I
 SELECT COUNT(*) FROM (SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2);
 ----
 2
+
+# Verify the first two _ids are the smallest (test data has known ObjectIds)
+# ObjectId('507f1f77bcf86cd799439011') < ObjectId('507f1f77bcf86cd799439012')
+query I
+SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2;
+----
+507f1f77bcf86cd799439011
+507f1f77bcf86cd799439012
+
+# ============================================================================
+# ORDER BY _id DESC LIMIT - descending order
+# ============================================================================
+
+# ORDER BY _id DESC should also be pushed down
+query II
+EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id DESC LIMIT 2;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$sort[\s\S]*\$limit[\s\S]*
+
+# Verify descending order returns different results than ascending
+# Diana's auto-generated _id is newest, Charlie's is 507f1f77bcf86cd799439013
+query I
+SELECT COUNT(*) FROM (SELECT _id FROM mongo_test.users ORDER BY _id DESC LIMIT 2);
+----
+2
+
+# ============================================================================
+# ORDER BY _id with filter
+# ============================================================================
+
+# TopN with filter should include $match in pipeline
+query II
+EXPLAIN SELECT _id FROM mongo_test.users WHERE active = true ORDER BY _id LIMIT 2;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$sort[\s\S]*\$limit[\s\S]*
+
+# active=true: Alice, Charlie, Diana (3 users)
+# Limit 2 should return first 2 by _id order
+query I
+SELECT COUNT(*) FROM (SELECT _id FROM mongo_test.users WHERE active = true ORDER BY _id LIMIT 2);
+----
+2
+
+# ============================================================================
+# ORDER BY _id with LIMIT 1
+# ============================================================================
+
+# LIMIT 1 edge case
+query I
+SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 1;
+----
+507f1f77bcf86cd799439011
 
 statement ok
 DETACH mongo_test;

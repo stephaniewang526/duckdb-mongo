@@ -1,0 +1,193 @@
+# name: test/sql/query/pushdown_comprehensive.test
+# description: Comprehensive tests for pushdown coverage gaps
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# ============================================================================
+# Multiple GROUP BY columns
+# ============================================================================
+
+# GROUP BY with two columns should be pushed down
+query II
+EXPLAIN SELECT active, address_country, COUNT(*) FROM mongo_test.users GROUP BY active, address_country;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
+
+# Correctness check
+query III
+SELECT active, address_country, COUNT(*) FROM mongo_test.users GROUP BY active, address_country ORDER BY active, address_country;
+----
+false	USA	1
+true	USA	3
+
+# ============================================================================
+# Ungrouped aggregates (not just COUNT(*))
+# ============================================================================
+
+# Ungrouped SUM should be pushed down
+query II
+EXPLAIN SELECT SUM(balance) FROM mongo_test.users;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$sum[\s\S]*
+
+query R
+SELECT SUM(balance) FROM mongo_test.users;
+----
+4251.5
+
+# Ungrouped AVG should be pushed down
+query II
+EXPLAIN SELECT AVG(age) FROM mongo_test.users;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$avg[\s\S]*
+
+query R
+SELECT AVG(age) FROM mongo_test.users;
+----
+29.5
+
+# Ungrouped MIN/MAX should be pushed down
+query II
+EXPLAIN SELECT MIN(age), MAX(age) FROM mongo_test.users;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
+
+query II
+SELECT MIN(age), MAX(age) FROM mongo_test.users;
+----
+25	35
+
+# ============================================================================
+# IN filter pushdown
+# ============================================================================
+
+# IN clause should be pushed down as $in
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE name IN ('Alice', 'Bob');
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*Filters:[\s\S]*name[\s\S]*
+
+query I
+SELECT name FROM mongo_test.users WHERE name IN ('Alice', 'Bob') ORDER BY name;
+----
+Alice
+Bob
+
+# IN with numbers
+query I
+SELECT name FROM mongo_test.users WHERE age IN (25, 30) ORDER BY name;
+----
+Alice
+Bob
+
+# ============================================================================
+# IS NULL / IS NOT NULL - handled by DuckDB (may be optimized away based on stats)
+# ============================================================================
+
+# DuckDB may optimize away IS NOT NULL filters when column statistics indicate
+# no null values exist. The important thing is query correctness.
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE email IS NOT NULL;
+----
+4
+
+# IS NULL should return 0 when no nulls exist
+query I
+SELECT COUNT(*) FROM mongo_test.users WHERE email IS NULL;
+----
+0
+
+# ============================================================================
+# OR filter pushdown
+# ============================================================================
+
+# OR conditions should be pushed down
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE age = 25 OR age = 30;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*Filters:[\s\S]*age[\s\S]*
+
+query I
+SELECT name FROM mongo_test.users WHERE age = 25 OR age = 30 ORDER BY name;
+----
+Alice
+Bob
+
+# ============================================================================
+# Nested field filter pushdown
+# ============================================================================
+
+# Filter on flattened nested field should work
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE address_city = 'New York';
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*Filters:[\s\S]*address_city[\s\S]*
+
+query I
+SELECT name FROM mongo_test.users WHERE address_city = 'New York';
+----
+Alice
+
+# Combined nested field filter
+query I
+SELECT name FROM mongo_test.users WHERE address_country = 'USA' AND address_city = 'Chicago';
+----
+Charlie
+
+# ============================================================================
+# Mixed aggregate types in GROUP BY
+# ============================================================================
+
+# Multiple different aggregate types should all be pushed down
+query II
+EXPLAIN SELECT active, COUNT(*), SUM(balance), MIN(age), MAX(age), AVG(balance) FROM mongo_test.users GROUP BY active;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
+
+query IIIRIR
+SELECT active, COUNT(*), SUM(balance), MIN(age), MAX(age), AVG(balance) FROM mongo_test.users GROUP BY active ORDER BY active;
+----
+false	1	500.25	25	25	500.25
+true	3	3751.25	28	35	1250.4166666666667
+
+# ============================================================================
+# Filter + multiple aggregates
+# ============================================================================
+
+# Filter with multiple aggregates
+query II
+EXPLAIN SELECT COUNT(*), SUM(balance), AVG(age) FROM mongo_test.users WHERE active = true;
+----
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$group[\s\S]*
+
+query IRR
+SELECT COUNT(*), SUM(balance), AVG(age) FROM mongo_test.users WHERE active = true;
+----
+3	3751.25	31.0
+
+# ============================================================================
+# Products collection - aggregate tests
+# ============================================================================
+
+# COUNT and AVG on products work correctly
+query II
+SELECT in_stock, COUNT(*) FROM mongo_test.products GROUP BY in_stock ORDER BY in_stock;
+----
+false	1
+true	2
+
+# AVG on products
+query IR
+SELECT in_stock, AVG(price) FROM mongo_test.products GROUP BY in_stock ORDER BY in_stock;
+----
+false	299.99
+true	514.99
+
+statement ok
+DETACH mongo_test;
