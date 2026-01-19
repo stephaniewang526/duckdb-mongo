@@ -189,5 +189,29 @@ SELECT in_stock, AVG(price) FROM mongo_test.products GROUP BY in_stock ORDER BY 
 false	299.99
 true	514.99
 
+# ============================================================================
+# Decimal128 aggregate tests (Decimal128 infers as DOUBLE)
+# ============================================================================
+
+# Decimal128 fields should be inferred as DOUBLE and support numeric aggregates
+query I
+SELECT COUNT(*) FROM mongo_test.decimal_test;
+----
+3
+
+# SUM on Decimal128 field
+query IR
+SELECT category, SUM(amount) FROM mongo_test.decimal_test GROUP BY category ORDER BY category;
+----
+A	1123.44
+B	50.0
+
+# AVG on Decimal128 field
+query IR
+SELECT category, AVG(amount) FROM mongo_test.decimal_test GROUP BY category ORDER BY category;
+----
+A	561.72
+B	50.0
+
 statement ok
 DETACH mongo_test;
