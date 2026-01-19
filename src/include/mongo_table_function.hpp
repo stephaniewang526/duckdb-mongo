@@ -14,9 +14,9 @@ namespace duckdb {
 
 // Schema enforcement mode for handling type mismatches between MongoDB documents and expected schema
 enum class SchemaMode {
-	PERMISSIVE,   // Default: set invalid fields to NULL, keep all rows
+	PERMISSIVE,    // Default: set invalid fields to NULL, keep all rows
 	DROPMALFORMED, // Skip entire rows that have any schema violation
-	FAILFAST      // Throw error immediately on first mismatch
+	FAILFAST       // Throw error immediately on first mismatch
 };
 
 struct MongoConnection {

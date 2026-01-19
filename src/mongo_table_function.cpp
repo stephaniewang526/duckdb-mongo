@@ -1252,8 +1252,7 @@ static bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const vec
 		}
 
 		// Missing field is OK (will be NULL)
-		if (!element || element.type() == bsoncxx::type::k_null ||
-		    element.type() == bsoncxx::type::k_undefined) {
+		if (!element || element.type() == bsoncxx::type::k_null || element.type() == bsoncxx::type::k_undefined) {
 			continue;
 		}
 
@@ -3114,8 +3113,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 
 	// When schema enforcement is needed, ensure ALL schema columns are fetched from MongoDB
 	// so validation can check all columns, not just the ones DuckDB requested
-	bool needs_schema_enforcement =
-	    data.has_explicit_schema && data.schema_mode != SchemaMode::PERMISSIVE;
+	bool needs_schema_enforcement = data.has_explicit_schema && data.schema_mode != SchemaMode::PERMISSIVE;
 	if (needs_schema_enforcement) {
 		// Add all schema columns to requested_column_indices if not already present
 		for (idx_t col_idx = 0; col_idx < data.column_names.size(); col_idx++) {
@@ -3201,8 +3199,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 
 	// Handle COUNT(*) queries: output has 1 column but may have filter columns in requested_column_names
 	// Skip this optimization if schema enforcement is needed (non-PERMISSIVE mode with explicit schema)
-	bool needs_schema_enforcement =
-	    bind_data.has_explicit_schema && bind_data.schema_mode != SchemaMode::PERMISSIVE;
+	bool needs_schema_enforcement = bind_data.has_explicit_schema && bind_data.schema_mode != SchemaMode::PERMISSIVE;
 	if (output.ColumnCount() == 1 && state.requested_column_names.size() > 1 && !needs_schema_enforcement) {
 		state.requested_column_names.clear();
 		state.requested_column_types.clear();
@@ -3283,9 +3280,9 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		if (row_valid && num_cols_to_use > 0) {
 			// Flatten only the requested columns to output
 			// Note: FlattenDocument also does schema checks, but we've already validated above
-			row_valid = FlattenDocument(doc, trunc_names, trunc_types, output, count,
-			                            bind_data.column_name_to_mongo_path, bind_data.schema_mode,
-			                            bind_data.has_explicit_schema);
+			row_valid =
+			    FlattenDocument(doc, trunc_names, trunc_types, output, count, bind_data.column_name_to_mongo_path,
+			                    bind_data.schema_mode, bind_data.has_explicit_schema);
 		}
 		++(*state.current);
 		if (row_valid) {
