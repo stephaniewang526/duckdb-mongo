@@ -462,6 +462,12 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		return false;
 	}
 
+	// Disable aggregate pushdown when schema enforcement is needed
+	// (non-PERMISSIVE mode with explicit schema requires DuckDB-side validation)
+	if (bind->has_explicit_schema && bind->schema_mode != SchemaMode::PERMISSIVE) {
+		return false;
+	}
+
 	// GROUP BY keys must be direct column refs
 	vector<pair<string, string>> group_fields; // {output_field_name, mongo_path}
 	vector<LogicalType> group_types;

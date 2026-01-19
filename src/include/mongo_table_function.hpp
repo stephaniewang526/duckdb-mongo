@@ -12,6 +12,13 @@
 
 namespace duckdb {
 
+// Schema enforcement mode for handling type mismatches between MongoDB documents and expected schema
+enum class SchemaMode {
+	PERMISSIVE,    // Default: set invalid fields to NULL, keep all rows
+	DROPMALFORMED, // Skip entire rows that have any schema violation
+	FAILFAST       // Throw error immediately on first mismatch
+};
+
 struct MongoConnection {
 	std::string connection_string;
 	mongocxx::client client;
@@ -30,6 +37,10 @@ struct MongoScanData : public TableFunctionData {
 	//! `find(...)`. Schema must be provided via `columns` for non-collection-shaped results.
 	std::string pipeline_json;
 	int64_t sample_size;
+	//! Schema enforcement mode: controls behavior when document fields don't match expected types
+	SchemaMode schema_mode;
+	//! Whether an explicit schema was provided (only enforce schema_mode when true)
+	bool has_explicit_schema;
 
 	// Schema information
 	vector<string> column_names;
@@ -41,7 +52,9 @@ struct MongoScanData : public TableFunctionData {
 	// Complex filter pushdown: MongoDB $expr queries for complex expressions
 	bsoncxx::document::value complex_filter_expr;
 
-	MongoScanData() : sample_size(100), complex_filter_expr(bsoncxx::builder::basic::document {}.extract()) {
+	MongoScanData()
+	    : sample_size(100), schema_mode(SchemaMode::PERMISSIVE), has_explicit_schema(false),
+	      complex_filter_expr(bsoncxx::builder::basic::document {}.extract()) {
 	}
 };
 
@@ -93,9 +106,18 @@ LogicalType InferTypeFromBSON(const bsoncxx::document::element &element);
 
 LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types);
 
-void FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
+// Parse schema mode from string (case-insensitive)
+SchemaMode ParseSchemaMode(const std::string &mode_str);
+
+// Convert schema mode to string for display
+std::string SchemaModeToString(SchemaMode mode);
+
+// Returns true if row is valid, false if row should be skipped (DROPMALFORMED)
+// Throws exception in FAILFAST mode on schema violation
+bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
-                     const std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
+                     const std::unordered_map<std::string, std::string> &column_name_to_mongo_path,
+                     SchemaMode schema_mode = SchemaMode::PERMISSIVE, bool has_explicit_schema = false);
 
 // Projection pushdown function
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,

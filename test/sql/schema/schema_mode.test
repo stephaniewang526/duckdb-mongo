@@ -1,0 +1,249 @@
+# name: test/sql/schema/schema_mode.test
+# description: Tests for schema enforcement modes (permissive, dropmalformed, failfast)
+# group: [schema]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+# ============================================================================
+# Test PERMISSIVE mode (default) - set invalid fields to NULL
+# ============================================================================
+
+# Test permissive mode with type_conflicts collection
+# The collection has: { id: '123', value: 'string' }, { id: 456, value: 789 }, { id: true, value: false }
+# When schema expects BIGINT for 'value', strings and booleans should become NULL
+
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'permissive'
+) ORDER BY id;
+----
+123	NULL
+456	789
+true	NULL
+
+# Test permissive mode is the default (same result without specifying schema_mode)
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'}
+) ORDER BY id;
+----
+123	NULL
+456	789
+true	NULL
+
+# ============================================================================
+# Test DROPMALFORMED mode - skip rows with schema violations
+# ============================================================================
+
+# Test dropmalformed mode - only row with id=456 has valid BIGINT value
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'dropmalformed'
+) ORDER BY id;
+----
+456	789
+
+# Test dropmalformed with BOOLEAN column - only { id: true, value: false } has valid boolean
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BOOLEAN'},
+    schema_mode := 'dropmalformed'
+) ORDER BY id;
+----
+true	false
+
+# Test dropmalformed returns 0 rows when no documents match schema
+# Note: Use SELECT with columns to ensure values are read
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'DATE'},
+    schema_mode := 'dropmalformed'
+);
+----
+
+# ============================================================================
+# Test FAILFAST mode - throw error on first mismatch
+# ============================================================================
+
+# Test failfast mode throws error with BIGINT schema on string value
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'failfast'
+) ORDER BY id;
+----
+Schema violation
+
+# Test failfast mode error message contains field name and types
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BOOLEAN'},
+    schema_mode := 'failfast'
+);
+----
+expected type BOOLEAN
+
+# ============================================================================
+# Test schema mode only enforced with explicit schema
+# ============================================================================
+
+# Without explicit schema (using inference), failfast doesn't throw errors
+# even when type conversions fail silently (because has_explicit_schema=false)
+query III
+SELECT _id, name, age FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    schema_mode := 'failfast'
+) ORDER BY name LIMIT 2;
+----
+507f1f77bcf86cd799439011	Alice	30
+507f1f77bcf86cd799439012	Bob	25
+
+# ============================================================================
+# Test valid type conversions don't trigger violations
+# ============================================================================
+
+# Numeric type coercion (int32 -> bigint, double -> bigint) should not trigger violations
+query II
+SELECT name, age FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT'},
+    schema_mode := 'failfast'
+) ORDER BY name LIMIT 2;
+----
+Alice	30
+Bob	25
+
+# VARCHAR accepts everything - should never trigger violations
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'VARCHAR'},
+    schema_mode := 'failfast'
+) ORDER BY id;
+----
+123	string
+456	789
+true	false
+
+# ============================================================================
+# Test schema_mode parameter validation
+# ============================================================================
+
+# Test invalid schema_mode value
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'users',
+    columns := {'name': 'VARCHAR'},
+    schema_mode := 'invalid'
+);
+----
+Invalid schema_mode
+
+# Test case-insensitive schema_mode (DROPMALFORMED in uppercase)
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'DROPMALFORMED'
+);
+----
+456	789
+
+# Test alternative spelling: drop_malformed
+query II
+SELECT id, value FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'drop_malformed'
+);
+----
+456	789
+
+# Test alternative spelling: fail_fast
+statement error
+SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'fail_fast'
+);
+----
+Schema violation
+
+# ============================================================================
+# Test COUNT(*) with schema enforcement
+# ============================================================================
+
+# COUNT(*) with PERMISSIVE returns all rows (default behavior)
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'permissive'
+);
+----
+3
+
+# COUNT(*) with DROPMALFORMED returns only valid rows
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'dropmalformed'
+);
+----
+1
+
+# COUNT(*) with FAILFAST throws error on first mismatch
+statement error
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017',
+    'duckdb_mongo_test',
+    'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'},
+    schema_mode := 'failfast'
+);
+----
+Schema violation
