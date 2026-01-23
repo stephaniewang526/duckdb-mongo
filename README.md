@@ -224,15 +224,15 @@ MongoDB Collection      →  Table/View
 
 **Default Schema Behavior:**
 
-- **Without `dbname`**: Scans all databases, defaults to `"main"` schema
-- **With `dbname`**: Uses database name as default schema
+- **Without `dbname`**: Creates a schema for each MongoDB database plus a `main` schema; defaults to `"main"`
+- **With `dbname`**: Creates only the specified database schema; defaults to that schema
 
 ```sql
 ATTACH 'host=localhost port=27017' AS mongo_all (TYPE MONGO);
-USE mongo_all;  -- Defaults to "main"
+USE mongo_all;  -- Defaults to "main", but all databases available as schemas
 
 ATTACH 'host=localhost port=27017 dbname=mydb' AS mongo_db (TYPE MONGO);
-USE mongo_db;  -- Defaults to "mydb"
+USE mongo_db;  -- Defaults to "mydb" (only schema available)
 ```
 
 ## Querying MongoDB
@@ -289,14 +289,13 @@ SHOW DATABASES;
 │ mongo_test    │
 └───────────────┘
 
--- List schemas (MongoDB databases) in the attached catalog
-SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'mongo_test' ORDER BY schema_name;
+-- List schemas in the attached catalog (only the specified database when using dbname=)
+SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'mongo_test';
 ┌───────────────────┐
 │    schema_name    │
 │      varchar      │
 ├───────────────────┤
 │ duckdb_mongo_test │
-│ main              │
 └───────────────────┘
 
 -- Select data from a specific collection

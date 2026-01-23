@@ -1,0 +1,271 @@
+# name: test/sql/attach/catalog_operations.test
+# description: Test DuckDB catalog operations with attached MongoDB databases
+# group: [attach]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_db (TYPE MONGO);
+
+query I
+SHOW DATABASES;
+----
+memory
+mongo_db
+
+statement ok
+USE mongo_db;
+
+statement ok
+USE mongo_db.duckdb_mongo_test;
+
+statement ok
+USE memory.main;
+
+statement ok
+USE mongo_db.duckdb_mongo_test;
+
+query I
+SHOW TABLES;
+----
+decimal_test
+deeply_nested
+empty_collection
+matrix
+nested_scalars_test
+object_container_test
+orders
+products
+schema_test_nested
+schema_test_paths
+schema_test_simple
+schema_test_types
+schema_test_with_id
+type_conflicts
+users
+
+# SHOW ALL TABLES shows tables from all databases
+statement ok
+USE memory.main;
+
+statement ok
+CREATE TABLE test_memory_table (id INTEGER, name VARCHAR);
+
+query III
+SELECT database, schema, name FROM (SHOW ALL TABLES) ORDER BY database, name;
+----
+memory	main	test_memory_table
+mongo_db	duckdb_mongo_test	decimal_test
+mongo_db	duckdb_mongo_test	deeply_nested
+mongo_db	duckdb_mongo_test	empty_collection
+mongo_db	duckdb_mongo_test	matrix
+mongo_db	duckdb_mongo_test	nested_scalars_test
+mongo_db	duckdb_mongo_test	object_container_test
+mongo_db	duckdb_mongo_test	orders
+mongo_db	duckdb_mongo_test	products
+mongo_db	duckdb_mongo_test	schema_test_nested
+mongo_db	duckdb_mongo_test	schema_test_paths
+mongo_db	duckdb_mongo_test	schema_test_simple
+mongo_db	duckdb_mongo_test	schema_test_types
+mongo_db	duckdb_mongo_test	schema_test_with_id
+mongo_db	duckdb_mongo_test	type_conflicts
+mongo_db	duckdb_mongo_test	users
+
+statement ok
+DROP TABLE test_memory_table;
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE mongo_db.duckdb_mongo_test.users) ORDER BY column_name;
+----
+_id	VARCHAR
+active	BOOLEAN
+address_city	VARCHAR
+address_country	VARCHAR
+address_street	VARCHAR
+address_zip	VARCHAR
+age	BIGINT
+balance	DOUBLE
+created_at	DATE
+email	VARCHAR
+name	VARCHAR
+tags	VARCHAR[]
+
+query II
+SELECT name, type FROM pragma_table_info('mongo_db.duckdb_mongo_test.users') ORDER BY name;
+----
+_id	VARCHAR
+active	BOOLEAN
+address_city	VARCHAR
+address_country	VARCHAR
+address_street	VARCHAR
+address_zip	VARCHAR
+age	BIGINT
+balance	DOUBLE
+created_at	DATE
+email	VARCHAR
+name	VARCHAR
+tags	VARCHAR[]
+
+# Verify collections appear as views
+query I
+SELECT view_name FROM duckdb_views() 
+WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test' 
+  AND view_name IN ('users', 'products')
+ORDER BY view_name;
+----
+products
+users
+
+# Total collections in test database
+query I
+SELECT COUNT(*) FROM duckdb_views() 
+WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test';
+----
+15
+
+query I
+SELECT column_name FROM duckdb_columns() 
+WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test' 
+  AND table_name = 'users' AND column_name IN ('_id', 'name')
+ORDER BY column_name;
+----
+_id
+name
+
+# Verify column type
+query I
+SELECT data_type FROM duckdb_columns() 
+WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test' 
+  AND table_name = 'users' AND column_name = 'name';
+----
+VARCHAR
+
+query I
+SELECT column_name FROM information_schema.columns 
+WHERE table_catalog = 'mongo_db' AND table_schema = 'duckdb_mongo_test' 
+  AND table_name = 'users' AND column_name IN ('_id', 'name')
+ORDER BY column_name;
+----
+_id
+name
+
+query I
+SELECT table_name FROM information_schema.tables 
+WHERE table_catalog = 'mongo_db' AND table_schema = 'duckdb_mongo_test' 
+  AND table_name IN ('users', 'products')
+ORDER BY table_name;
+----
+products
+users
+
+
+query I
+SELECT schema_name FROM information_schema.schemata 
+WHERE catalog_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test';
+----
+duckdb_mongo_test
+
+statement ok
+USE memory.main;
+
+statement ok
+DETACH mongo_db;
+
+# =============================================================================
+# Test attach without dbname - each MongoDB database becomes a schema
+# =============================================================================
+
+statement ok
+ATTACH 'host=localhost port=27017' AS mongo_all (TYPE MONGO);
+
+query I
+SHOW DATABASES;
+----
+memory
+mongo_all
+
+# Multiple schemas should exist (one per MongoDB database + main)
+query I
+SELECT schema_name FROM information_schema.schemata 
+WHERE catalog_name = 'mongo_all' AND schema_name IN ('main', 'duckdb_mongo_test')
+ORDER BY schema_name;
+----
+duckdb_mongo_test
+main
+
+# USE with just catalog name should work
+statement ok
+USE mongo_all;
+
+# USE with specific schema
+statement ok
+USE mongo_all.duckdb_mongo_test;
+
+# SHOW TABLES shows collections from the current schema
+query I
+SELECT name FROM (SHOW TABLES) WHERE name = 'users';
+----
+users
+
+# SHOW ALL TABLES shows collections from multiple schemas
+query III
+SELECT database, schema, name FROM (SHOW ALL TABLES) 
+WHERE database = 'mongo_all' 
+  AND ((schema = 'duckdb_mongo_test' AND name = 'users')
+    OR (schema = 'tpch_test' AND name = 'customer'))
+ORDER BY schema, name;
+----
+mongo_all	duckdb_mongo_test	users
+mongo_all	tpch_test	customer
+
+# Switch to a different MongoDB database/schema
+statement ok
+USE mongo_all.tpch_test;
+
+# Tables in tpch_test schema are different
+query I
+SELECT name FROM (SHOW TABLES) WHERE name IN ('customer', 'lineitem', 'nation', 'orders', 'part', 'partsupp', 'region', 'supplier')
+ORDER BY name;
+----
+customer
+lineitem
+nation
+orders
+part
+partsupp
+region
+supplier
+
+# Cross-schema query: access collections from a different schema
+query I
+SELECT name FROM mongo_all.duckdb_mongo_test.users ORDER BY name LIMIT 1;
+----
+Alice
+
+# Verify views in multiple schemas
+query II
+SELECT schema_name, view_name FROM duckdb_views() 
+WHERE database_name = 'mongo_all' 
+  AND ((schema_name = 'duckdb_mongo_test' AND view_name = 'users')
+    OR (schema_name = 'tpch_test' AND view_name = 'customer'))
+ORDER BY schema_name, view_name;
+----
+duckdb_mongo_test	users
+tpch_test	customer
+
+# DESCRIBE works with full path across schemas
+query II
+SELECT column_name, column_type FROM (DESCRIBE mongo_all.duckdb_mongo_test.users) 
+WHERE column_name IN ('_id', 'name')
+ORDER BY column_name;
+----
+_id	VARCHAR
+name	VARCHAR
+
+statement ok
+USE memory.main;
+
+statement ok
+DETACH mongo_all;
