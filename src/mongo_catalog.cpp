@@ -261,79 +261,60 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	}
 
 	auto client = GetClient();
-	vector<string> databases;
+	auto system_transaction = CatalogTransaction::GetSystemTransaction(GetDatabase());
 
 	if (!database_name.empty()) {
-		auto mongo_db = client[database_name];
-		auto collections = mongo_db.list_collection_names();
-		databases.push_back("");
-	} else {
-		auto db_list = client.list_database_names();
-		for (const auto &db_name : db_list) {
-			databases.push_back(db_name);
+		// Specific database attached - create only that schema
+		CreateSchemaInfo schema_info;
+		schema_info.schema = database_name;
+		schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
+		auto schema_entry = CreateSchema(system_transaction, schema_info);
+		if (schema_entry) {
+			auto &schema = schema_entry->Cast<MongoSchemaEntry>();
+			auto default_generator =
+			    make_uniq<MongoCollectionGenerator>(*this, schema, connection_string, database_name, this);
+			schema.SetDefaultGenerator(std::move(default_generator));
+			callback(schema);
 		}
+		if (default_schema.empty()) {
+			default_schema = database_name;
+		}
+		return;
 	}
 
-	auto system_transaction = CatalogTransaction::GetSystemTransaction(GetDatabase());
-	string first_non_system_schema;
-
-	// Create "main" schema - always create it for consistency with DuckDB's schema model
-	// When a specific database is attached, main schema uses that database
-	// When no database is specified, main schema doesn't correspond to a real MongoDB database
+	// No specific database - create schema for each MongoDB database
+	// First create "main" schema with empty generator for DuckDB consistency
 	CreateSchemaInfo main_schema_info;
 	main_schema_info.schema = "main";
 	main_schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	auto main_schema_entry = CreateSchema(system_transaction, main_schema_info);
 	if (main_schema_entry) {
 		auto &main_schema = main_schema_entry->Cast<MongoSchemaEntry>();
-		// When a specific database is attached, main schema uses that database
-		// When no database is specified, main schema doesn't correspond to a real MongoDB database
-		string main_generator_db_name = database_name.empty() ? "" : database_name;
-		auto default_generator =
-		    make_uniq<MongoCollectionGenerator>(*this, main_schema, connection_string, main_generator_db_name, this);
+		auto default_generator = make_uniq<MongoCollectionGenerator>(*this, main_schema, connection_string, "", this);
 		main_schema.SetDefaultGenerator(std::move(default_generator));
 		callback(main_schema);
 	}
 
-	for (const auto &schema_name : databases) {
-		if (database_name.empty() && (schema_name == "admin" || schema_name == "local" || schema_name == "config")) {
+	for (const auto &schema_name : client.list_database_names()) {
+		if (schema_name == "admin" || schema_name == "local" || schema_name == "config") {
 			continue;
 		}
 
-		string actual_schema_name;
-		if (schema_name.empty() && !database_name.empty()) {
-			actual_schema_name = database_name;
-		} else if (schema_name.empty()) {
-			actual_schema_name = "main";
-		} else {
-			actual_schema_name = schema_name;
-		}
-
-		if (first_non_system_schema.empty() && actual_schema_name != "admin" && actual_schema_name != "local" &&
-		    actual_schema_name != "config") {
-			first_non_system_schema = actual_schema_name;
-		}
-
 		CreateSchemaInfo schema_info;
-		schema_info.schema = actual_schema_name;
+		schema_info.schema = schema_name;
 		schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 		auto schema_entry = CreateSchema(system_transaction, schema_info);
 		if (schema_entry) {
 			auto &schema = schema_entry->Cast<MongoSchemaEntry>();
-			string generator_db_name = database_name.empty() ? schema_name : database_name;
 			auto default_generator =
-			    make_uniq<MongoCollectionGenerator>(*this, schema, connection_string, generator_db_name, this);
+			    make_uniq<MongoCollectionGenerator>(*this, schema, connection_string, schema_name, this);
 			schema.SetDefaultGenerator(std::move(default_generator));
 			callback(schema);
 		}
 	}
 
 	if (default_schema.empty()) {
-		if (!database_name.empty()) {
-			default_schema = database_name;
-		} else {
-			default_schema = "main";
-		}
+		default_schema = "main";
 	}
 }
 
@@ -368,17 +349,11 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 	}
 
 	if (!schema && !schema_name.empty()) {
-		try {
-			string mongo_db_name;
-			if (!database_name.empty()) {
-				if (schema_name == database_name) {
-					mongo_db_name = database_name;
-				}
-			} else {
-				mongo_db_name = schema_name;
-			}
-
-			if (!mongo_db_name.empty()) {
+		// On-demand schema creation: only when no database_name is specified,
+		// allow creating schemas for MongoDB databases that exist.
+		// When database_name is specified, we only have the database_name schema.
+		if (database_name.empty()) {
+			try {
 				CreateSchemaInfo schema_info;
 				schema_info.schema = schema_name;
 				schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
@@ -387,13 +362,13 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 				if (schema_entry) {
 					auto &schema_ref = schema_entry->Cast<MongoSchemaEntry>();
 					auto default_generator =
-					    make_uniq<MongoCollectionGenerator>(*this, schema_ref, connection_string, mongo_db_name, this);
+					    make_uniq<MongoCollectionGenerator>(*this, schema_ref, connection_string, schema_name, this);
 					schema_ref.SetDefaultGenerator(std::move(default_generator));
 					schema = &schema_ref;
 				}
+			} catch (const std::exception &e) {
+				// Fall through
 			}
-		} catch (const std::exception &e) {
-			// Fall through
 		}
 	}
 

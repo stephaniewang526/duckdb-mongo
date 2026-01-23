@@ -132,25 +132,21 @@ SHOW TABLES;
 
 # Test schema cache invalidation
 # Query schemas to populate schema cache
-# When attaching with database=duckdb_mongo_test, it creates a schema with that database name
-# Filter to only show schemas from this database to avoid dependencies on other attached databases
+# When attaching with database=duckdb_mongo_test, only the database name schema is created
 query T
 SELECT schema_name FROM information_schema.schemata 
 WHERE catalog_name = 'test_mongo' 
-  AND schema_name IN ('duckdb_mongo_test', 'main')
-ORDER BY schema_name;
+  AND schema_name = 'duckdb_mongo_test';
 ----
 duckdb_mongo_test
-main
 
-# Get schema count (should be at least 2: main and duckdb_mongo_test)
-# Use >= to account for other schemas that might exist from other attached databases
+# Get schema count (should be 1: just duckdb_mongo_test)
 query I
 SELECT COUNT(*) FROM information_schema.schemata 
 WHERE catalog_name = 'test_mongo' 
-  AND schema_name IN ('duckdb_mongo_test', 'main');
+  AND schema_name = 'duckdb_mongo_test';
 ----
-2
+1
 
 # Clear cache - this should reset schemas_scanned = false
 statement ok
@@ -160,19 +156,17 @@ SELECT * FROM mongo_clear_cache();
 query T
 SELECT schema_name FROM information_schema.schemata 
 WHERE catalog_name = 'test_mongo' 
-  AND schema_name IN ('duckdb_mongo_test', 'main')
-ORDER BY schema_name;
+  AND schema_name = 'duckdb_mongo_test';
 ----
 duckdb_mongo_test
-main
 
-# Verify count is still 2 after cache clear
+# Verify count is still 1 after cache clear
 query I
 SELECT COUNT(*) FROM information_schema.schemata 
 WHERE catalog_name = 'test_mongo' 
-  AND schema_name IN ('duckdb_mongo_test', 'main');
+  AND schema_name = 'duckdb_mongo_test';
 ----
-2
+1
 
 # Test that view info cache is cleared (by querying a collection, which uses cached view info)
 # When attaching with database=duckdb_mongo_test, collections are in the duckdb_mongo_test schema
