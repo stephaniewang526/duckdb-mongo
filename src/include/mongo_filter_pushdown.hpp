@@ -10,9 +10,9 @@
 
 namespace duckdb {
 
-bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,
-                                                    const std::vector<std::string> &column_names,
-                                                    const std::vector<LogicalType> &column_types,
-                                                    const std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
+bsoncxx::document::value
+ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters, const std::vector<std::string> &column_names,
+                           const std::vector<LogicalType> &column_types,
+                           const std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
 
 } // namespace duckdb

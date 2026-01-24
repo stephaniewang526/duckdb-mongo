@@ -74,8 +74,8 @@ static void AppendValueToArray(bsoncxx::builder::basic::array &array_builder, co
 }
 
 // Helper function to append a DuckDB Value to a MongoDB basic document builder
-static void AppendValueToDocument(bsoncxx::builder::basic::document &doc_builder, const string &key,
-                                  const Value &value, const LogicalType &type) {
+static void AppendValueToDocument(bsoncxx::builder::basic::document &doc_builder, const string &key, const Value &value,
+                                  const LogicalType &type) {
 	if (value.IsNull()) {
 		doc_builder.append(bsoncxx::builder::basic::kvp(key, bsoncxx::types::b_null {}));
 		return;
@@ -282,10 +282,10 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 
 } // namespace
 
-bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,
-                                                    const std::vector<string> &column_names,
-                                                    const std::vector<LogicalType> &column_types,
-                                                    const std::unordered_map<string, string> &column_name_to_mongo_path) {
+bsoncxx::document::value
+ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters, const std::vector<string> &column_names,
+                           const std::vector<LogicalType> &column_types,
+                           const std::unordered_map<string, string> &column_name_to_mongo_path) {
 	if (!filters || filters->filters.empty()) {
 		return bsoncxx::builder::basic::document {}.extract();
 	}
@@ -331,8 +331,8 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 			column_filters[mongo_column_name] = bsoncxx::builder::basic::document {};
 			auto &doc = column_filters[mongo_column_name];
 			for (auto filter_it = filter_doc.view().begin(); filter_it != filter_doc.view().end(); ++filter_it) {
-				doc.append(bsoncxx::builder::basic::kvp(
-				    filter_it->key(), bsoncxx::types::bson_value::value(filter_it->get_value())));
+				doc.append(bsoncxx::builder::basic::kvp(filter_it->key(),
+				                                        bsoncxx::types::bson_value::value(filter_it->get_value())));
 			}
 		} else {
 			auto filter_view = filter_doc.view();

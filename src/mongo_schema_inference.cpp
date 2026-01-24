@@ -975,8 +975,8 @@ bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, std::vector<
 	return !column_names.empty();
 }
 
-void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &columns_value, std::vector<string> &column_names,
-                                     std::vector<LogicalType> &column_types,
+void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &columns_value,
+                                     std::vector<string> &column_names, std::vector<LogicalType> &column_types,
                                      std::unordered_map<string, string> &column_name_to_mongo_path) {
 	auto &child_type = columns_value.type();
 	if (child_type.id() != LogicalTypeId::STRUCT) {
@@ -1064,8 +1064,8 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 	}
 }
 
-void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_size,
-                              std::vector<string> &column_names, std::vector<LogicalType> &column_types,
+void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_size, std::vector<string> &column_names,
+                              std::vector<LogicalType> &column_types,
                               std::unordered_map<string, string> &column_name_to_mongo_path) {
 	std::unordered_map<std::string, std::vector<LogicalType>> field_types;
 
@@ -1163,7 +1163,8 @@ static bool IsBSONTypeCompatible(bsoncxx::type bson_type, LogicalTypeId expected
 // Used for COUNT(*) queries where we need to validate but not materialize data
 bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vector<string> &column_names,
                             const std::vector<LogicalType> &column_types,
-                            const std::unordered_map<string, string> &column_name_to_mongo_path, SchemaMode schema_mode) {
+                            const std::unordered_map<string, string> &column_name_to_mongo_path,
+                            SchemaMode schema_mode) {
 	for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
 		const auto &column_name = column_names[col_idx];
 		const auto &column_type = column_types[col_idx];
