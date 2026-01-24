@@ -1,6 +1,7 @@
 #include "mongo_optimizer.hpp"
 
 #include "mongo_table_function.hpp"
+#include "mongo_filter_pushdown.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/optimizer/optimizer.hpp"

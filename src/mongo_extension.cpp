@@ -4,6 +4,7 @@
 #include "mongo_storage_extension.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_table_function.hpp"
+#include "mongo_expr_pushdown.hpp"
 #include "mongo_optimizer.hpp"
 #include "mongo_secrets.hpp"
 #include "duckdb/function/table_function.hpp"
@@ -22,8 +23,6 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
                                                        GlobalTableFunctionState *global_state);
 void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataChunk &output);
-void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
-                                vector<unique_ptr<Expression>> &filters);
 InsertionOrderPreservingMap<string> MongoScanToString(TableFunctionToStringInput &input);
 
 static void LoadInternal(ExtensionLoader &loader) {

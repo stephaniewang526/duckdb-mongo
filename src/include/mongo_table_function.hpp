@@ -119,20 +119,15 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::
                      const std::unordered_map<std::string, std::string> &column_name_to_mongo_path,
                      SchemaMode schema_mode = SchemaMode::PERMISSIVE, bool has_explicit_schema = false);
 
+bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
+                            const std::vector<LogicalType> &column_types,
+                            const std::unordered_map<std::string, std::string> &column_name_to_mongo_path,
+                            SchemaMode schema_mode);
+
 // Projection pushdown function
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
                                               const vector<string> &all_column_names,
                                               const unordered_map<string, string> &column_name_to_mongo_path);
-
-// Filter pushdown functions
-bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters,
-                                                    const vector<string> &column_names,
-                                                    const vector<LogicalType> &column_types,
-                                                    const unordered_map<string, string> &column_name_to_mongo_path);
-
-// Complex filter pushdown function
-void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, FunctionData *bind_data,
-                                vector<unique_ptr<Expression>> &filters);
 
 class MongoClearCacheFunction : public TableFunction {
 public:
