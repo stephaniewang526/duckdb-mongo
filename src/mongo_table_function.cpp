@@ -62,6 +62,9 @@ InsertionOrderPreservingMap<string> MongoScanToString(TableFunctionToStringInput
 		if (!data.filter_query.empty()) {
 			result["filter"] = data.filter_query;
 		}
+		if (!data.complex_filter_expr.view().empty()) {
+			result["expr"] = bsoncxx::to_json(data.complex_filter_expr.view());
+		}
 	}
 	return result;
 }
@@ -2391,6 +2394,7 @@ struct MongoFunctionMapping {
 static const vector<MongoFunctionMapping> MONGO_FUNCTION_MAPPINGS = {
     // String functions
     {{"length", "len", "char_length", "character_length"}, "$strLenCP", 1, {LogicalTypeId::VARCHAR}, false},
+    {{"substring", "substr"}, "$substrCP", 3, {}, false},
 
     // Date functions
     // TODO: Re-enable date functions (YEAR, MONTH, DAY) once type mismatch issues with FilterCombiner are resolved
@@ -2445,6 +2449,20 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 		}
 	}
 
+	if (mapping.mongo_operator == "$substrCP") {
+		// Expect substring(string, start, length) with numeric constants for start/length.
+		if (func_expr.children.size() != 3) {
+			return false;
+		}
+		auto first_type = func_expr.children[0]->return_type.id();
+		if (first_type != LogicalTypeId::VARCHAR) {
+			return false;
+		}
+		auto start_class = func_expr.children[1]->GetExpressionClass();
+		auto len_class = func_expr.children[2]->GetExpressionClass();
+		return start_class == ExpressionClass::BOUND_CONSTANT && len_class == ExpressionClass::BOUND_CONSTANT;
+	}
+
 	// Check if date/timestamp type is required
 	// For date functions, we need to check the underlying type (unwrap CAST if present)
 	if (mapping.requires_date_type && mapping.arg_count > 0) {
@@ -2464,6 +2482,38 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 	return true;
 }
 
+static bool IsSafeMongoFunction(const BoundFunctionExpression &func_expr) {
+	const MongoFunctionMapping *mapping = FindFunctionMapping(func_expr.function.name);
+	if (!mapping) {
+		return false;
+	}
+	if (mapping->mongo_operator != "$substrCP") {
+		return false;
+	}
+	if (!ValidateFunctionSignature(func_expr, *mapping)) {
+		return false;
+	}
+	auto &start_expr = func_expr.children[1]->Cast<BoundConstantExpression>();
+	auto &len_expr = func_expr.children[2]->Cast<BoundConstantExpression>();
+	auto start_val = start_expr.value.GetValue<int64_t>();
+	auto len_val = len_expr.value.GetValue<int64_t>();
+	return start_val >= 1 && len_val >= 0;
+}
+
+static bool IsSafeMongoExpr(const Expression &expr) {
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COMPARISON) {
+		return false;
+	}
+	auto &comp_expr = expr.Cast<BoundComparisonExpression>();
+	if (comp_expr.left && comp_expr.left->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		return IsSafeMongoFunction(comp_expr.left->Cast<BoundFunctionExpression>());
+	}
+	if (comp_expr.right && comp_expr.right->GetExpressionClass() == ExpressionClass::BOUND_FUNCTION) {
+		return IsSafeMongoFunction(comp_expr.right->Cast<BoundFunctionExpression>());
+	}
+	return false;
+}
+
 // Helper function to convert a DuckDB function to MongoDB aggregation operator
 static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr, const vector<string> &column_names,
                                        const unordered_map<string, string> &column_name_to_mongo_path,
@@ -2479,6 +2529,28 @@ static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr,
 	// Validate function signature
 	if (!ValidateFunctionSignature(func_expr, *mapping)) {
 		return false;
+	}
+
+	if (mapping->mongo_operator == "$substrCP") {
+		const BoundColumnRefExpression *col_ref = UnwrapCastToColumnRef(*func_expr.children[0]);
+		if (!col_ref) {
+			return false;
+		}
+		string mongo_path = GetMongoPathForColumn(*col_ref, column_names, column_name_to_mongo_path);
+		if (mongo_path.empty()) {
+			return false;
+		}
+		auto &start_expr = func_expr.children[1]->Cast<BoundConstantExpression>();
+		auto &len_expr = func_expr.children[2]->Cast<BoundConstantExpression>();
+		auto start_val = start_expr.value.GetValue<int64_t>();
+		auto len_val = len_expr.value.GetValue<int64_t>();
+		auto mongo_start = start_val > 0 ? start_val - 1 : 0;
+		bsoncxx::builder::basic::array args;
+		args.append(mongo_path);
+		args.append(mongo_start);
+		args.append(len_val);
+		result_builder.append(bsoncxx::builder::basic::kvp(mapping->mongo_operator, args.extract()));
+		return true;
 	}
 
 	// All supported functions currently require a single column reference argument (may be CAST-wrapped)
@@ -2539,7 +2611,7 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
                                          const unordered_map<string, string> &column_name_to_mongo_path,
                                          idx_t table_index, bsoncxx::builder::basic::document &result_builder) {
 	// Check if expression is volatile or can throw
-	if (expr.IsVolatile() || expr.CanThrow()) {
+	if ((expr.IsVolatile() || expr.CanThrow()) && !IsSafeMongoExpr(expr)) {
 		return false;
 	}
 
