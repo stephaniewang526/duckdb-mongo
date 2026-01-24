@@ -189,7 +189,6 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 	return LogicalType::VARCHAR;
 }
 
-
 void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &prefix, int depth,
                        std::unordered_map<std::string, std::vector<LogicalType>> &field_types,
                        std::unordered_map<std::string, std::string> &flattened_to_mongo_path,
@@ -495,8 +494,6 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 		column_types.push_back(LogicalType::VARCHAR);
 	}
 }
-
-
 
 // Validation-only function that checks schema compatibility without writing to output
 // Used for COUNT(*) queries where we need to validate but not materialize data
