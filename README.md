@@ -889,7 +889,8 @@ Complex filter pushdown enables pushing complex filter expressions (function cal
 
 **Supported Complex Filter Types:**
 
-- **Function calls**: `LENGTH(name) > 5`, `YEAR(created_at) >= 2023`, `MONTH(created_at) = 1`
+- **Function calls**: `LENGTH(name) > 5`, `CHAR_LENGTH(name) > 5`
+- **Substring filters**: `SUBSTRING(name, 1, 3) = 'Ann'` (constant start/length only)
 - **Column-to-column comparisons**: `age > balance`, `price >= cost`
 - **Combined simple and complex filters**: `age > 25 AND LENGTH(name) > 5`
 
@@ -905,6 +906,10 @@ Complex filter pushdown enables pushing complex filter expressions (function cal
 -- Function call filter (complex) - pushed down as $expr
 SELECT name, email FROM mongo_test.duckdb_mongo_test.users WHERE LENGTH(name) > 5;
 -- MongoDB: {$expr: {$gt: [{$strLenCP: "$name"}, 5]}}
+
+-- Substring filter (complex) - pushed down as $expr
+SELECT name FROM mongo_test.duckdb_mongo_test.users WHERE SUBSTRING(name, 1, 3) = 'Ann';
+-- MongoDB: {$expr: {$eq: [{$substrCP: ["$name", 0, 3]}, "Ann"]}}
 
 -- Column-to-column comparison (complex) - pushed down as $expr
 SELECT name, age, balance FROM mongo_test.duckdb_mongo_test.users WHERE age > balance;
@@ -924,6 +929,8 @@ EXPLAIN SELECT name FROM mongo_test.duckdb_mongo_test.users WHERE LENGTH(name) >
 The plan shows `MONGO_SCAN` directly (no `FILTER` operator above it), indicating the complex filter was pushed down to MongoDB.
 
 > **Note:** Complex filter pushdown works alongside simple filter pushdown. Simple filters are always handled by TableFilter pushdown for optimal performance, while complex filters are handled by `$expr` pushdown when needed.
+>
+> **Note:** Substring pushdown requires constant start and length arguments (`SUBSTRING(col, start, length)`), with `start >= 1` and `length >= 0`.
 
 #### Semi-Join IN Filter Pushdown
 
