@@ -2388,19 +2388,13 @@ struct MongoFunctionMapping {
 	string mongo_operator;                    // MongoDB aggregation operator (e.g., "$strLenCP")
 	idx_t arg_count;                          // Expected argument count
 	vector<LogicalTypeId> required_arg_types; // Required argument types (empty = any type)
-	bool requires_date_type;                  // If true, first arg must be DATE/TIMESTAMP/TIMESTAMP_TZ
 };
 
 static const vector<MongoFunctionMapping> MONGO_FUNCTION_MAPPINGS = {
     // String functions
-    {{"length", "len", "char_length", "character_length"}, "$strLenCP", 1, {LogicalTypeId::VARCHAR}, false},
-    {{"substring", "substr"}, "$substrCP", 3, {}, false},
+    {{"length", "len", "char_length", "character_length"}, "$strLenCP", 1, {LogicalTypeId::VARCHAR}},
+    {{"substring", "substr"}, "$substrCP", 3, {}},
 
-    // Date functions
-    // TODO: Re-enable date functions (YEAR, MONTH, DAY) once type mismatch issues with FilterCombiner are resolved
-    // {{"year"}, "$year", 1, {}, true},
-    // {{"month"}, "$month", 1, {}, true},
-    // {{"day", "dayofmonth"}, "$dayOfMonth", 1, {}, true},
 };
 
 // Case-insensitive map from function name to function mapping
@@ -2461,22 +2455,6 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 		auto start_class = func_expr.children[1]->GetExpressionClass();
 		auto len_class = func_expr.children[2]->GetExpressionClass();
 		return start_class == ExpressionClass::BOUND_CONSTANT && len_class == ExpressionClass::BOUND_CONSTANT;
-	}
-
-	// Check if date/timestamp type is required
-	// For date functions, we need to check the underlying type (unwrap CAST if present)
-	if (mapping.requires_date_type && mapping.arg_count > 0) {
-		const Expression *first_arg = func_expr.children[0].get();
-		// Unwrap CAST expressions to get to the underlying column type
-		while (first_arg->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
-			auto &cast_expr = first_arg->Cast<BoundCastExpression>();
-			first_arg = cast_expr.child.get();
-		}
-		auto first_arg_type = first_arg->return_type.id();
-		if (first_arg_type != LogicalTypeId::DATE && first_arg_type != LogicalTypeId::TIMESTAMP &&
-		    first_arg_type != LogicalTypeId::TIMESTAMP_TZ) {
-			return false;
-		}
 	}
 
 	return true;
