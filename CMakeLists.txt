@@ -24,6 +24,7 @@ set(EXTENSION_SOURCES
     src/mongo_optimizer.cpp
     src/mongo_table_function.cpp
     src/mongo_schema_inference.cpp
+    src/schema/mongo_schema_inference_helpers.cpp
     src/mongo_filter_pushdown.cpp
     src/mongo_expr_pushdown.cpp
     src/mongo_storage_extension.cpp
