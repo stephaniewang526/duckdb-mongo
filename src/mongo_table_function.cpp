@@ -2394,7 +2394,6 @@ static const vector<MongoFunctionMapping> MONGO_FUNCTION_MAPPINGS = {
     // String functions
     {{"length", "len", "char_length", "character_length"}, "$strLenCP", 1, {LogicalTypeId::VARCHAR}},
     {{"substring", "substr"}, "$substrCP", 3, {}},
-
 };
 
 // Case-insensitive map from function name to function mapping
