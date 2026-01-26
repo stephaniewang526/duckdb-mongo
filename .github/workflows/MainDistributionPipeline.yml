@@ -14,7 +14,8 @@ concurrency:
 jobs:
   duckdb-stable-build:
     name: Build extension binaries (DuckDB v1.4.4 stable)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.4
+    # TODO: Switch back to v1.4.4 tag once available in extension-ci-tools.
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@main
     with:
       duckdb_version: v1.4.4
       ci_tools_version: v1.4.4
@@ -42,7 +43,8 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.4
+    # TODO: Switch back to v1.4.4 tag once available in extension-ci-tools.
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@main
     with:
       duckdb_version: v1.4.4
       ci_tools_version: v1.4.4
