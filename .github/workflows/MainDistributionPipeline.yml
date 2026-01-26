@@ -13,11 +13,11 @@ concurrency:
 
 jobs:
   duckdb-stable-build:
-    name: Build extension binaries (DuckDB v1.4.3 stable)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.3
+    name: Build extension binaries (DuckDB v1.4.4 stable)
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.4
     with:
-      duckdb_version: v1.4.3
-      ci_tools_version: v1.4.3
+      duckdb_version: v1.4.4
+      ci_tools_version: v1.4.4
       extension_name: mongo
       exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;"
       # Use vcpkg commit with mongo-c-driver 1.30.3 which includes the CMP0042 fix.
@@ -42,10 +42,10 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.3
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.4.4
     with:
-      duckdb_version: v1.4.3
-      ci_tools_version: v1.4.3
+      duckdb_version: v1.4.4
+      ci_tools_version: v1.4.4
       extension_name: mongo
       # Tidy check disabled because it requires MongoDB C++ driver (vcpkg dependency).
       format_checks: 'format'
