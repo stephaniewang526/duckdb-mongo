@@ -85,8 +85,8 @@ struct MongoScanState : public LocalTableFunctionState {
 };
 
 // Schema inference functions
-bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, std::vector<std::string> &column_names,
-                                  std::vector<LogicalType> &column_types,
+bool ParseSchemaFromAtlasDocument(ClientContext &context, mongocxx::collection &collection,
+                                  std::vector<std::string> &column_names, std::vector<LogicalType> &column_types,
                                   std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
 
 void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &columns_value,

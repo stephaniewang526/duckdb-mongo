@@ -1,4 +1,11 @@
 #include "mongo_table_function.hpp"
+#ifndef DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER
+#if __has_include("duckdb/main/extension_callback_manager.hpp")
+#define DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER 1
+#else
+#define DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER 0
+#endif
+#endif
 #include "schema/mongo_schema_inference_internal.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -270,8 +277,16 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 	}
 }
 
-bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, std::vector<string> &column_names,
-                                  std::vector<LogicalType> &column_types,
+static LogicalType ParseLogicalTypeFromString(const std::string &type_str, ClientContext &context) {
+#if DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER
+	return TransformStringToLogicalType(type_str, context);
+#else
+	return TransformStringToLogicalType(type_str);
+#endif
+}
+
+bool ParseSchemaFromAtlasDocument(ClientContext &context, mongocxx::collection &collection,
+                                  std::vector<string> &column_names, std::vector<LogicalType> &column_types,
                                   std::unordered_map<string, string> &column_name_to_mongo_path) {
 	// Check for __schema document in the collection (for Atlas SQL users)
 	bsoncxx::builder::basic::document filter_builder;
@@ -312,14 +327,14 @@ bool ParseSchemaFromAtlasDocument(mongocxx::collection &collection, std::vector<
 		if (it->type() == bsoncxx::type::k_string) {
 			// Simple format: "field": "VARCHAR"
 			std::string type_str(it->get_string().value.data(), it->get_string().value.length());
-			field_type = TransformStringToLogicalType(type_str);
+			field_type = ParseLogicalTypeFromString(type_str, context);
 		} else if (it->type() == bsoncxx::type::k_document) {
 			// Nested format: "field": { "type": "VARCHAR", "path": "field.path" }
 			auto field_doc = it->get_document().value;
 			auto type_elem = field_doc["type"];
 			if (type_elem && type_elem.type() == bsoncxx::type::k_string) {
 				std::string type_str(type_elem.get_string().value.data(), type_elem.get_string().value.length());
-				field_type = TransformStringToLogicalType(type_str);
+				field_type = ParseLogicalTypeFromString(type_str, context);
 			} else {
 				continue; // Skip invalid entries
 			}
