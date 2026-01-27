@@ -9,6 +9,12 @@
 #include "mongo_secrets.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
+#if __has_include("duckdb/main/extension_callback_manager.hpp")
+#include "duckdb/main/extension_callback_manager.hpp"
+#define DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER 1
+#else
+#define DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER 0
+#endif
 #include "duckdb/main/secret/secret.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
@@ -106,12 +112,22 @@ static void LoadInternal(ExtensionLoader &loader) {
 	// Register MongoDB storage extension for ATTACH support
 	auto &db = loader.GetDatabaseInstance();
 	auto &config = DBConfig::GetConfig(db);
+#if DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER
+	auto storage_extension = MongoStorageExtension::Create();
+	shared_ptr<StorageExtension> storage_extension_ptr = std::move(storage_extension);
+	StorageExtension::Register(config, "mongo", std::move(storage_extension_ptr));
+#else
 	config.storage_extensions["mongo"] = MongoStorageExtension::Create();
+#endif
 
 	// Register optimizer extension (runs after DuckDB built-in optimizers)
 	OptimizerExtension opt_ext;
 	opt_ext.optimize_function = MongoOptimizerOptimize;
+#if DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER
+	OptimizerExtension::Register(config, std::move(opt_ext));
+#else
 	config.optimizer_extensions.push_back(opt_ext);
+#endif
 }
 
 void MongoExtension::Load(ExtensionLoader &loader) {
