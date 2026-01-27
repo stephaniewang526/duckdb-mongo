@@ -128,7 +128,7 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 
 	// If no user-provided schema, check for __schema document (Atlas SQL)
 	if (!schema_set) {
-		schema_set = ParseSchemaFromAtlasDocument(collection, result->column_names, result->column_types,
+		schema_set = ParseSchemaFromAtlasDocument(context, collection, result->column_names, result->column_types,
 		                                          result->column_name_to_mongo_path);
 		if (schema_set) {
 			result->has_explicit_schema = true; // Explicit schema via __schema document

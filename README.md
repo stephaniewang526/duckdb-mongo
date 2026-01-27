@@ -2,6 +2,18 @@
 
 Integrates DuckDB with MongoDB, enabling direct SQL queries over MongoDB collections without exporting data or ETL.
 
+## Announcement
+
+We currently support DuckDB `v1.4.4`. The extension is built against the DuckDB submodule in this repo, and that
+submodule is updated when new DuckDB releases are validated. See
+[How to Maintain an Extension Through DuckDB Releases](https://duckdb.org/community_extensions/development#how-to-maintain-an-extension-through-duckdb-releases)
+for the community extension policy.
+
+> **Note:** Community extensions are built and distributed only for the latest stable DuckDB release. Older DuckDB
+> versions can keep using the last compatible mongo extension build, but they will not receive updates. To keep
+> getting new mongo extension releases, upgrade DuckDB to the latest stable version. To confirm the version
+> locally, run `SELECT version();` in DuckDB (or `duckdb --version` if you are using the CLI).
+
 ## Quick Start
 
 ```sql
