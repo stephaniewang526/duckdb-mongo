@@ -625,53 +625,42 @@ SELECT * FROM mongo_scan(
 The extension enables **in-process analytical SQL queries** over MongoDB data using DuckDB's embedded analytical engine. Queries execute against live MongoDB data in real-time, with analytical operations (joins, aggregations, window functions) performed locally in memory.
 
 ```
-┌──────────────────┐
-│ User/Application │
-│   (SQL Queries)  │
-└────────┬─────────┘
-         │ SQL Query
-         ▼
+┌─────────────────────────────────────────┐
+│           User/Application              │
+└────────┬───────────────────────┬────────┘
+         │                       ▲
+         │ SQL Query             │ Result set (columnar)
+         ▼                       │
 ┌─────────────────────────────────────────┐
 │         DUCKDB ENGINE                   │
 │  ┌───────────────────────────────────┐  │
-│  │ SQL Planning & Optimization       │  │
-│  │ - Query planning                  │  │
-│  │ - Filter pushdown analysis        │  │
-│  │ - Projection pushdown analysis    │  │
-│  │ - Filter prune optimization       │  │
+│  │ Query Planning & Optimization     │  │
+│  │ - Pushdown & Plan Optimization    │  │
 │  └───────────────────────────────────┘  │
 │  ┌───────────────────────────────────┐  │
-│  │ SQL Execution (Analytical)        │  │
-│  │ - Joins                           │  │
-│  │ - Aggregations (GROUP BY, COUNT)  │  │
-│  │ - Sorting                         │  │
-│  │ - Window functions                │  │
-│  │ - Complex SQL operations          │  │
+│  │ Query Execution                   │  │
+│  │ - Joins, Aggregations             │  │
+│  │ - Window Functions, CTEs          │  │
 │  └───────────────────────────────────┘  │
-└────────┬────────────────────────────────┘
-         │ Table Function Call (mongo_scan)
-         │ Requests data chunks
-         ▼
-┌─────────────────────────────────────────┐
+└────────┬───────────────────────┬────────┘
+         │                       ▲
+         │ mongo_scan            │ DataChunks
+         ▼                       │
+┌────────┴───────────────────────┴────────┐
 │ duckdb-mongo Extension                  │
-│  • Schema Inference                     │
-│  • Filter Translation                   │
-│  • Projection Optimization              │
-│  • BSON → Columnar                      │
-│  • Type Conversion                      │
-└────────┬────────────────────────────────┘
-         │
-         │ MongoDB Query (filtered)
-         │ Stream documents on-demand
-         ▼
+│  • Schema Resolution                    │
+│  • Pushdown Optimization                │
+│  • BSON → Columnar Conversion           │
+└────────┬───────────────────────┬────────┘
+         │                       ▲
+         │ MQL                   │ BSON stream
+         ▼                       │
 ┌─────────────────────────────────────────┐
 │         MONGODB DATABASE                │
 │  ┌───────────────────────────────────┐  │
 │  │ Document Store Operations         │  │
-│  │ - Index lookups                   │  │
-│  │ - Document filtering              │  │
-│  │ - Cursor management               │  │
-│  │ - Document retrieval              │  │
+│  │ - Query Execution ($match, $group)│  │
+│  │ - Document Streaming (cursor)     │  │
 │  └───────────────────────────────────┘  │
 │  Data stays here (No ETL/Export)        │
 └─────────────────────────────────────────┘
@@ -689,11 +678,9 @@ The extension enables **in-process analytical SQL queries** over MongoDB data us
    │ Parse connection string, database, collection              │
    │ Create MongoDB connection                                  │
    │                                                            │
-   │ Schema Inference:                                          │
-   │   • Sample N documents from collection                     │
-   │   • Collect all field paths (nested traversal)             │
-   │   • Resolve type conflicts (frequency analysis)            │
-   │   • Build column names and types                           │
+   │ Schema Resolution:                                          │
+   │   • User-provided, __schema document, or inference          │
+   │   • Build column names and types                            │
    │                                                            │
    │ Return schema to DuckDB                                    │
    └────────────────────────────────────────────────────────────┘
@@ -701,22 +688,12 @@ The extension enables **in-process analytical SQL queries** over MongoDB data us
                               ▼
 2. INIT PHASE (happens once per query)
    ┌────────────────────────────────────────────────────────────┐
-   │ Get collection reference                                   │
-   │ Convert DuckDB WHERE filters → MongoDB $match query        │
-   │   • Parse table filters from query plan                    │
-   │   • Convert to MongoDB operators ($eq, $gt, $gte, etc.)    │
-   │   • Merge multiple filters on same column                  │
+   │ Build MongoDB query:                                        │
+   │   • Filter pushdown ($match)                                │
+   │   • Projection pushdown                                     │
+   │   • Aggregation/Limit pushdown ($group, $limit)             │
    │                                                            │
-   │ Build MongoDB projection:                                  │
-   │   • Identify columns needed (SELECT + non-pushed filters)  │
-   │   • Apply filter prune (exclude filter-only columns)       │
-   │   • Convert column paths to MongoDB dot notation           │
-   │                                                            │
-   │ Create MongoDB cursor:                                     │
-   │   • Execute find() with $match filter and projection       │
-   │   • MongoDB applies filters using indexes                  │
-   │   • MongoDB returns only projected fields                  │
-   │   • Returns cursor iterator                                │
+   │ Create MongoDB cursor or aggregation pipeline               │
    └────────────────────────────────────────────────────────────┘
                               │
                               ▼
