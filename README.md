@@ -678,9 +678,9 @@ The extension enables **in-process analytical SQL queries** over MongoDB data us
    │ Parse connection string, database, collection              │
    │ Create MongoDB connection                                  │
    │                                                            │
-   │ Schema Resolution:                                          │
-   │   • User-provided, __schema document, or inference          │
-   │   • Build column names and types                            │
+   │ Schema Resolution:                                         │
+   │   • User-provided, __schema document, or inference         │
+   │   • Build column names and types                           │
    │                                                            │
    │ Return schema to DuckDB                                    │
    └────────────────────────────────────────────────────────────┘
@@ -688,12 +688,12 @@ The extension enables **in-process analytical SQL queries** over MongoDB data us
                               ▼
 2. INIT PHASE (happens once per query)
    ┌────────────────────────────────────────────────────────────┐
-   │ Build MongoDB query:                                        │
-   │   • Filter pushdown ($match)                                │
-   │   • Projection pushdown                                     │
-   │   • Aggregation/Limit pushdown ($group, $limit)             │
+   │ Build MongoDB query:                                       │
+   │   • Filter pushdown ($match)                               │
+   │   • Projection pushdown                                    │
+   │   • Aggregation/Limit pushdown ($group, $limit)            │
    │                                                            │
-   │ Create MongoDB cursor or aggregation pipeline               │
+   │ Create MongoDB cursor or aggregation pipeline              │
    └────────────────────────────────────────────────────────────┘
                               │
                               ▼
