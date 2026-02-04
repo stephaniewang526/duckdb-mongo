@@ -62,8 +62,6 @@ SELECT * FROM atlas_db.mydb.mycollection;
 
 ## Installation
 
-### From Community Extensions (Recommended)
-
 The easiest way to install the mongo extension is from the DuckDB community extensions repository:
 
 ```sql
@@ -73,65 +71,7 @@ LOAD mongo;
 
 After installation, you can use the extension as described in the [Connecting to MongoDB](#connecting-to-mongodb) section.
 
-### From Source
-
-**Prerequisites:**
-- CMake 3.5 or higher
-- C++ compiler with C++17 support
-- vcpkg (for dependency management)
-
-**Build Steps:**
-
-1. Clone the repository with submodules:
-```sh
-git clone --recurse-submodules https://github.com/stephaniewang526/duckdb-mongo.git
-cd duckdb-mongo
-```
-
-2. Set up vcpkg (if not already done):
-```shell
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg
-./bootstrap-vcpkg.sh  # On Windows: .\bootstrap-vcpkg.bat
-export VCPKG_TOOLCHAIN_PATH=`pwd`/scripts/buildsystems/vcpkg.cmake
-```
-
-3. Install dependencies (first time only):
-```sh
-# Install MongoDB C++ driver via vcpkg
-../vcpkg/vcpkg install --triplet arm64-osx  # or x64-osx for Intel Mac
-```
-
-4. Build the extension:
-```sh
-# Set vcpkg environment
-export VCPKG_TOOLCHAIN_PATH=../vcpkg/scripts/buildsystems/vcpkg.cmake
-export VCPKG_TARGET_TRIPLET=arm64-osx  # or x64-osx for Intel Mac
-
-# Build
-make release
-```
-
-Or use the build script:
-```sh
-bash scripts/build.sh
-```
-
-**Built binaries:**
-- `./build/release/duckdb` - DuckDB shell with the extension pre-loaded
-- `./build/release/test/unittest` - Test runner
-- `./build/release/extension/mongo/mongo.duckdb_extension` - Loadable extension binary
-
-### Loading the Extension
-
-```sh
-./build/release/duckdb  # Extension auto-loaded
-```
-
-Or load explicitly:
-```sql
-LOAD '/path/to/mongo.duckdb_extension';
-```
+> **Note:** You can also [build from source](#building-from-source) and load the extension binary directly with `LOAD '/path/to/mongo.duckdb_extension';`
 
 ## Connecting to MongoDB
 
@@ -1037,6 +977,76 @@ The plan shows `MONGO_SCAN` with `scan_method: aggregate` and `pipeline` contain
 ## Contributing
 
 Contributions are welcome! Please open an issue or submit a pull request.
+
+### Building from Source
+
+**Prerequisites:**
+- CMake 3.5 or higher
+- C++ compiler with C++17 support
+- vcpkg (for dependency management)
+
+**Build Steps:**
+
+1. Clone the repository with submodules:
+```sh
+git clone --recurse-submodules https://github.com/stephaniewang526/duckdb-mongo.git
+cd duckdb-mongo
+```
+
+2. Set up vcpkg (if not already done):
+```shell
+git clone https://github.com/Microsoft/vcpkg.git
+cd vcpkg
+./bootstrap-vcpkg.sh  # On Windows: .\bootstrap-vcpkg.bat
+export VCPKG_TOOLCHAIN_PATH=`pwd`/scripts/buildsystems/vcpkg.cmake
+```
+
+3. Install dependencies (first time only):
+```sh
+# Install MongoDB C++ driver via vcpkg
+../vcpkg/vcpkg install --triplet arm64-osx  # or x64-osx for Intel Mac
+```
+
+4. Build the extension:
+```sh
+# Set vcpkg environment
+export VCPKG_TOOLCHAIN_PATH=../vcpkg/scripts/buildsystems/vcpkg.cmake
+export VCPKG_TARGET_TRIPLET=arm64-osx  # or x64-osx for Intel Mac
+
+# Build
+make release
+```
+
+Or use the build script:
+```sh
+bash scripts/build.sh
+```
+
+**Built binaries:**
+- `./build/release/duckdb` - DuckDB shell with the extension pre-loaded
+- `./build/release/test/unittest` - Test runner
+- `./build/release/extension/mongo/mongo.duckdb_extension` - Loadable extension binary
+
+### Loading the Extension (Development)
+
+```sh
+./build/release/duckdb  # Extension auto-loaded
+```
+
+Or load explicitly:
+```sql
+LOAD '/path/to/mongo.duckdb_extension';
+```
+
+### Running Tests
+
+```sh
+# Set up test database
+bash test/create-mongo-tables.sh
+
+# Run tests
+MONGODB_TEST_DATABASE_AVAILABLE=1 make test_release
+```
 
 ## License
 
