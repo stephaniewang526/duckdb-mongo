@@ -13,14 +13,45 @@
 
 #include <bsoncxx/builder/basic/array.hpp>
 #include <bsoncxx/builder/basic/document.hpp>
+#include <bsoncxx/oid.hpp>
 #include <bsoncxx/types/bson_value/value.hpp>
 
 namespace duckdb {
 namespace {
 
+// Check if a string is a valid MongoDB ObjectID hex string (24 hex characters)
+static bool IsValidObjectIdHex(const string &str) {
+	if (str.size() != 24) {
+		return false;
+	}
+	for (char c : str) {
+		if (!std::isxdigit(static_cast<unsigned char>(c))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Check if a column name represents an ObjectID field
+// Returns true for "_id" and fields ending with "_id" (common foreign key pattern)
+static bool IsObjectIdColumn(const string &column_name) {
+	if (column_name == "_id") {
+		return true;
+	}
+	// Check for nested _id (e.g., "customer._id")
+	if (column_name.size() > 4 && column_name.substr(column_name.size() - 4) == "._id") {
+		return true;
+	}
+	// Check for foreign key pattern (e.g., "customer_id", "user_id")
+	if (column_name.size() > 3 && column_name.substr(column_name.size() - 3) == "_id") {
+		return true;
+	}
+	return false;
+}
+
 // Helper function to append a DuckDB Value to a MongoDB basic array builder
 static void AppendValueToArray(bsoncxx::builder::basic::array &array_builder, const Value &value,
-                               const LogicalType &type) {
+                               const LogicalType &type, const string &column_name = "") {
 	if (value.IsNull()) {
 		array_builder.append(bsoncxx::types::b_null {});
 		return;
@@ -28,7 +59,13 @@ static void AppendValueToArray(bsoncxx::builder::basic::array &array_builder, co
 
 	switch (type.id()) {
 	case LogicalTypeId::VARCHAR: {
-		array_builder.append(value.GetValue<string>());
+		auto str_val = value.GetValue<string>();
+		// Convert to ObjectID if this is an ObjectID column and the value is a valid hex string
+		if (IsObjectIdColumn(column_name) && IsValidObjectIdHex(str_val)) {
+			array_builder.append(bsoncxx::oid(str_val));
+		} else {
+			array_builder.append(str_val);
+		}
 		break;
 	}
 	case LogicalTypeId::BIGINT: {
@@ -74,16 +111,26 @@ static void AppendValueToArray(bsoncxx::builder::basic::array &array_builder, co
 }
 
 // Helper function to append a DuckDB Value to a MongoDB basic document builder
+// column_name is the original column name (used to detect ObjectID fields)
 static void AppendValueToDocument(bsoncxx::builder::basic::document &doc_builder, const string &key, const Value &value,
-                                  const LogicalType &type) {
+                                  const LogicalType &type, const string &column_name = "") {
 	if (value.IsNull()) {
 		doc_builder.append(bsoncxx::builder::basic::kvp(key, bsoncxx::types::b_null {}));
 		return;
 	}
 
+	// Use column_name for ObjectID detection if provided, otherwise use key
+	const string &col_for_oid_check = column_name.empty() ? key : column_name;
+
 	switch (type.id()) {
 	case LogicalTypeId::VARCHAR: {
-		doc_builder.append(bsoncxx::builder::basic::kvp(key, value.GetValue<string>()));
+		auto str_val = value.GetValue<string>();
+		// Convert to ObjectID if this is an ObjectID column and the value is a valid hex string
+		if (IsObjectIdColumn(col_for_oid_check) && IsValidObjectIdHex(str_val)) {
+			doc_builder.append(bsoncxx::builder::basic::kvp(key, bsoncxx::oid(str_val)));
+		} else {
+			doc_builder.append(bsoncxx::builder::basic::kvp(key, str_val));
+		}
 		break;
 	}
 	case LogicalTypeId::BIGINT: {
@@ -142,7 +189,7 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 
 		switch (constant_filter.comparison_type) {
 		case ExpressionType::COMPARE_EQUAL:
-			AppendValueToDocument(doc, column_name, constant_filter.constant, column_type);
+			AppendValueToDocument(doc, column_name, constant_filter.constant, column_type, column_name);
 			break;
 		case ExpressionType::COMPARE_NOTEQUAL:
 			mongo_op = "$ne";
@@ -166,7 +213,7 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 
 		if (!mongo_op.empty()) {
 			bsoncxx::builder::basic::document op_doc;
-			AppendValueToDocument(op_doc, mongo_op, constant_filter.constant, column_type);
+			AppendValueToDocument(op_doc, mongo_op, constant_filter.constant, column_type, column_name);
 			doc.append(bsoncxx::builder::basic::kvp(column_name, op_doc.extract()));
 		}
 		break;
@@ -178,7 +225,7 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 		}
 		bsoncxx::builder::basic::array in_array;
 		for (const auto &val : in_filter.values) {
-			AppendValueToArray(in_array, val, column_type);
+			AppendValueToArray(in_array, val, column_type, column_name);
 		}
 		bsoncxx::builder::basic::document in_doc;
 		in_doc.append(bsoncxx::builder::basic::kvp("$in", in_array.extract()));
@@ -228,7 +275,7 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 				const auto &cf = child_filter->Cast<ConstantFilter>();
 				if (cf.comparison_type == ExpressionType::COMPARE_EQUAL) {
 					bsoncxx::builder::basic::document or_doc;
-					AppendValueToDocument(or_doc, column_name, cf.constant, column_type);
+					AppendValueToDocument(or_doc, column_name, cf.constant, column_type, column_name);
 					or_array.append(or_doc.extract());
 					continue;
 				}

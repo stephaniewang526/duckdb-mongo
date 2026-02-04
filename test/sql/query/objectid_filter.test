@@ -1,0 +1,70 @@
+# name: test/sql/query/objectid_filter.test
+# description: Test filtering on ObjectID fields (_id and foreign key references)
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# Test querying _id field - should return exactly 1 row
+# The users collection has documents with known ObjectIDs:
+# - Alice: 507f1f77bcf86cd799439011
+# - Bob: 507f1f77bcf86cd799439012
+# - Charlie: 507f1f77bcf86cd799439013
+# - Diana: (auto-generated ObjectID)
+
+query II
+SELECT name, email FROM mongo_test.users WHERE _id = '507f1f77bcf86cd799439011';
+----
+Alice	alice@example.com
+
+query II
+SELECT name, email FROM mongo_test.users WHERE _id = '507f1f77bcf86cd799439012';
+----
+Bob	bob@example.com
+
+# Test querying with IN filter on _id
+query II
+SELECT name, email FROM mongo_test.users WHERE _id IN ('507f1f77bcf86cd799439011', '507f1f77bcf86cd799439013') ORDER BY name;
+----
+Alice	alice@example.com
+Charlie	charlie@example.com
+
+# Test querying on foreign key ObjectID field (customer_id in orders)
+# The orders collection has:
+# - ORD-001: customer_id = 507f1f77bcf86cd799439011 (Alice)
+# - ORD-002: customer_id = 507f1f77bcf86cd799439012 (Bob)
+# - ORD-003: customer_id = 507f1f77bcf86cd799439013 (Charlie)
+# - ORD-004: customer_id = 507f1f77bcf86cd799439011 (Alice)
+
+query II
+SELECT order_id, status FROM mongo_test.orders WHERE customer_id = '507f1f77bcf86cd799439011' ORDER BY order_id;
+----
+ORD-001	completed
+ORD-004	pending
+
+query II
+SELECT order_id, status FROM mongo_test.orders WHERE customer_id = '507f1f77bcf86cd799439012';
+----
+ORD-002	pending
+
+# Test IN filter on foreign key ObjectID
+query II
+SELECT order_id, status FROM mongo_test.orders WHERE customer_id IN ('507f1f77bcf86cd799439011', '507f1f77bcf86cd799439013') ORDER BY order_id;
+----
+ORD-001	completed
+ORD-003	cancelled
+ORD-004	pending
+
+# Test inequality filter on _id (should work for sorting/range queries)
+query II
+SELECT name, email FROM mongo_test.users WHERE _id > '507f1f77bcf86cd799439011' AND _id <= '507f1f77bcf86cd799439013' ORDER BY _id;
+----
+Bob	bob@example.com
+Charlie	charlie@example.com
+
+statement ok
+DETACH mongo_test;
