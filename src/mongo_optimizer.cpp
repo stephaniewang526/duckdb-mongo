@@ -16,11 +16,6 @@
 #include "duckdb/planner/operator/logical_top_n.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 
-// DuckDB main changed table_index from idx_t to TableIndex
-#if __has_include("duckdb/common/table_index.hpp")
-#include "duckdb/common/table_index.hpp"
-#endif
-
 #include <bsoncxx/builder/basic/array.hpp>
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/json.hpp>
@@ -29,8 +24,6 @@
 #include <utility>
 
 namespace duckdb {
-
-using mongo_table_index_t = decltype(std::declval<ColumnBinding>().table_index);
 
 struct BindingMapRule {
 	mongo_table_index_t from_table_index;
