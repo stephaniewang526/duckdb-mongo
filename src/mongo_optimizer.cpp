@@ -131,7 +131,7 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 	}
 
 	// TableFilterSet pushdown (simple comparisons)
-	if (!get.table_filters.filters.empty()) {
+	if (MongoHasFilters(get.table_filters)) {
 		// ConvertFiltersToMongoQuery expects a mutable TableFilterSet (optional_ptr<TableFilterSet>),
 		// but LogicalGet::table_filters is const here. Copy the filter set for translation.
 		auto filters_copy = get.table_filters.Copy();
