@@ -357,17 +357,15 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 
 		// Create a new filter set with remapped indices
 		auto remapped_filters = make_uniq<TableFilterSet>();
-		for (const auto &filter_pair : input.filters->filters) {
-			idx_t filter_col_idx = filter_pair.first;
-			auto it = filter_index_map.find(filter_col_idx);
+		MongoForEachFilter(*input.filters, [&](idx_t col_idx, TableFilter &filter) {
+			auto it = filter_index_map.find(col_idx);
 			if (it != filter_index_map.end()) {
-				idx_t schema_col_idx = it->second;
-				remapped_filters->filters[schema_col_idx] = filter_pair.second->Copy();
+				MongoSetFilter(*remapped_filters, it->second, filter.Copy());
 			}
-		}
+		});
 
 		// Only attempt conversion if we successfully remapped at least one filter
-		if (!remapped_filters->filters.empty()) {
+		if (MongoHasFilters(*remapped_filters)) {
 			// Convert DuckDB filters to MongoDB query using remapped indices
 			auto mongo_filter = ConvertFiltersToMongoQuery(remapped_filters.get(), data.column_names, data.column_types,
 			                                               data.column_name_to_mongo_path);
@@ -427,7 +425,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Add filter columns to projection only if filters weren't pushed down to MongoDB.
 	// Pushed-down filters are handled server-side, so we don't need those columns.
 	// Unpushed filters require columns for post-scan filtering in DuckDB.
-	if (input.filters && !input.filters->filters.empty() && !input.column_ids.empty() && !filters_pushed_down) {
+	if (input.filters && MongoHasFilters(*input.filters) && !input.column_ids.empty() && !filters_pushed_down) {
 		// Map filter indices from column_ids space to schema space
 		unordered_map<idx_t, idx_t> filter_index_map;
 		for (size_t i = 0; i < input.column_ids.size(); i++) {
@@ -437,13 +435,12 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 			}
 		}
 		// Add filter columns to needed set (only if filters weren't pushed down)
-		for (const auto &filter_pair : input.filters->filters) {
-			idx_t filter_col_idx = filter_pair.first;
-			auto it = filter_index_map.find(filter_col_idx);
+		MongoForEachFilter(*input.filters, [&](idx_t col_idx, TableFilter &filter) {
+			auto it = filter_index_map.find(col_idx);
 			if (it != filter_index_map.end()) {
 				needed_column_indices.insert(it->second);
 			}
-		}
+		});
 	}
 
 	// Store requested columns in the order DuckDB requested them (from input.column_ids)
@@ -475,7 +472,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	}
 
 	// Also add any filter columns that weren't in input.column_ids (if filters weren't pushed down)
-	if (input.filters && !input.filters->filters.empty() && !input.column_ids.empty() && !filters_pushed_down) {
+	if (input.filters && MongoHasFilters(*input.filters) && !input.column_ids.empty() && !filters_pushed_down) {
 		unordered_map<idx_t, idx_t> filter_index_map;
 		for (size_t i = 0; i < input.column_ids.size(); i++) {
 			column_t col_id = input.column_ids[i];
@@ -483,14 +480,11 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 				filter_index_map[i] = col_id;
 			}
 		}
-		for (const auto &filter_pair : input.filters->filters) {
-			idx_t filter_col_idx = filter_pair.first;
-			auto it = filter_index_map.find(filter_col_idx);
+		MongoForEachFilter(*input.filters, [&](idx_t col_idx, TableFilter &filter) {
+			auto it = filter_index_map.find(col_idx);
 			if (it != filter_index_map.end()) {
 				idx_t schema_col_idx = it->second;
-				// Only add if not already added
 				if (needed_set.find(schema_col_idx) != needed_set.end()) {
-					// Check if already in requested columns
 					bool already_added = false;
 					for (idx_t req_idx : result->requested_column_indices) {
 						if (req_idx == schema_col_idx) {
@@ -505,7 +499,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 					}
 				}
 			}
-		}
+		});
 	}
 
 	// Build MongoDB find options

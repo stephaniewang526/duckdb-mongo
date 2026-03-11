@@ -26,8 +26,8 @@
 namespace duckdb {
 
 struct BindingMapRule {
-	idx_t from_table_index;
-	idx_t to_table_index;
+	mongo_table_index_t from_table_index;
+	mongo_table_index_t to_table_index;
 	idx_t column_offset;
 };
 
@@ -124,7 +124,7 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 	}
 
 	// TableFilterSet pushdown (simple comparisons)
-	if (!get.table_filters.filters.empty()) {
+	if (MongoHasFilters(get.table_filters)) {
 		// ConvertFiltersToMongoQuery expects a mutable TableFilterSet (optional_ptr<TableFilterSet>),
 		// but LogicalGet::table_filters is const here. Copy the filter set for translation.
 		auto filters_copy = get.table_filters.Copy();
@@ -158,7 +158,7 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 	return match.extract();
 }
 
-static bool IsSimpleColumnRef(const Expression &expr, idx_t expected_table_index, idx_t &out_col_idx) {
+static bool IsSimpleColumnRef(const Expression &expr, mongo_table_index_t expected_table_index, idx_t &out_col_idx) {
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return false;
 	}
@@ -171,7 +171,7 @@ static bool IsSimpleColumnRef(const Expression &expr, idx_t expected_table_index
 }
 
 static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalProjection *> &projections,
-                                   idx_t scan_table_index, idx_t &out_col_idx) {
+                                   mongo_table_index_t scan_table_index, idx_t &out_col_idx) {
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return false;
 	}
@@ -200,7 +200,8 @@ static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalP
 }
 
 static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<LogicalProjection *> &projections,
-                                           const MongoScanData &data, idx_t scan_table_index, idx_t &out_col_idx) {
+                                           const MongoScanData &data, mongo_table_index_t scan_table_index,
+                                           idx_t &out_col_idx) {
 	if (!ResolveColumnRefToScan(expr, projections, scan_table_index, out_col_idx)) {
 		return false;
 	}

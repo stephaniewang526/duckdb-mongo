@@ -333,7 +333,7 @@ bsoncxx::document::value
 ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters, const std::vector<string> &column_names,
                            const std::vector<LogicalType> &column_types,
                            const std::unordered_map<string, string> &column_name_to_mongo_path) {
-	if (!filters || filters->filters.empty()) {
+	if (!filters || !MongoHasFilters(*filters)) {
 		return bsoncxx::builder::basic::document {}.extract();
 	}
 
@@ -342,10 +342,9 @@ ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters, const std::vect
 	vector<bsoncxx::document::value> global_filters;
 
 	// Process each filter
-	for (const auto &filter_pair : filters->filters) {
-		idx_t col_idx = filter_pair.first;
+	MongoForEachFilter(*filters, [&](idx_t col_idx, TableFilter &filter_ref) {
 		if (col_idx >= column_names.size()) {
-			continue;
+			return;
 		}
 
 		const string &column_name = column_names[col_idx];
@@ -358,18 +357,18 @@ ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters, const std::vect
 			mongo_column_name = path_it->second;
 		}
 
-		auto filter_doc = ConvertSingleFilterToMongo(*filter_pair.second, mongo_column_name, column_type);
+		auto filter_doc = ConvertSingleFilterToMongo(filter_ref, mongo_column_name, column_type);
 
 		// Skip empty filters
 		if (filter_doc.view().empty()) {
-			continue;
+			return;
 		}
 
 		auto filter_view = filter_doc.view();
 		auto filter_it = filter_view.begin();
 		if (filter_it != filter_view.end() && !filter_it->key().empty() && filter_it->key().front() == '$') {
 			global_filters.push_back(std::move(filter_doc));
-			continue;
+			return;
 		}
 
 		// Merge filters for the same column if needed
@@ -396,7 +395,7 @@ ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet> filters, const std::vect
 				}
 			}
 		}
-	}
+	});
 
 	vector<bsoncxx::document::value> conjuncts;
 

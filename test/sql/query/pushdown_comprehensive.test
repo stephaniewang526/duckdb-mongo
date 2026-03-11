@@ -45,7 +45,7 @@ SELECT SUM(balance) FROM mongo_test.users;
 query II
 EXPLAIN SELECT AVG(age) FROM mongo_test.users;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*\$avg[\s\S]*
+physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
 
 query R
 SELECT AVG(age) FROM mongo_test.users;

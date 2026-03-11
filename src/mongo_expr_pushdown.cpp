@@ -1,5 +1,6 @@
 #include "mongo_expr_pushdown.hpp"
 
+#include "mongo_filter_pushdown.hpp"
 #include "mongo_table_function.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -289,7 +290,8 @@ static bool IsSimpleColumnToConstantComparison(const Expression &expr) {
 // Helper function to convert an expression to MongoDB $expr format
 static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<string> &column_names,
                                          const unordered_map<string, string> &column_name_to_mongo_path,
-                                         idx_t table_index, bsoncxx::builder::basic::document &result_builder) {
+                                         mongo_table_index_t table_index,
+                                         bsoncxx::builder::basic::document &result_builder) {
 	// Check if expression is volatile or can throw
 	if ((expr.IsVolatile() || expr.CanThrow()) && !IsSafeMongoExpr(expr)) {
 		return false;
