@@ -90,6 +90,7 @@ target_link_libraries(test_atlas_integration
   $<$<TARGET_EXISTS:core_functions_extension>:core_functions_extension>
   $<$<TARGET_EXISTS:parquet_extension>:parquet_extension>
   $<$<TARGET_EXISTS:tpch_extension>:tpch_extension>
+  $<$<TARGET_EXISTS:jemalloc_extension>:jemalloc_extension>
   $<IF:$<TARGET_EXISTS:mongo::mongocxx_static>,mongo::mongocxx_static,mongo::mongocxx_shared>
   $<IF:$<TARGET_EXISTS:mongo::bsoncxx_static>,mongo::bsoncxx_static,mongo::bsoncxx_shared>
 )
