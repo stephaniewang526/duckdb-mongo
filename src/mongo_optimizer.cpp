@@ -16,6 +16,11 @@
 #include "duckdb/planner/operator/logical_top_n.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 
+// DuckDB main changed table_index from idx_t to TableIndex
+#if __has_include("duckdb/common/table_index.hpp")
+#include "duckdb/common/table_index.hpp"
+#endif
+
 #include <bsoncxx/builder/basic/array.hpp>
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/json.hpp>
@@ -25,9 +30,11 @@
 
 namespace duckdb {
 
+using mongo_table_index_t = decltype(std::declval<ColumnBinding>().table_index);
+
 struct BindingMapRule {
-	idx_t from_table_index;
-	idx_t to_table_index;
+	mongo_table_index_t from_table_index;
+	mongo_table_index_t to_table_index;
 	idx_t column_offset;
 };
 
@@ -158,7 +165,7 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 	return match.extract();
 }
 
-static bool IsSimpleColumnRef(const Expression &expr, idx_t expected_table_index, idx_t &out_col_idx) {
+static bool IsSimpleColumnRef(const Expression &expr, mongo_table_index_t expected_table_index, idx_t &out_col_idx) {
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return false;
 	}
@@ -171,7 +178,7 @@ static bool IsSimpleColumnRef(const Expression &expr, idx_t expected_table_index
 }
 
 static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalProjection *> &projections,
-                                   idx_t scan_table_index, idx_t &out_col_idx) {
+                                   mongo_table_index_t scan_table_index, idx_t &out_col_idx) {
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return false;
 	}
@@ -200,7 +207,8 @@ static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalP
 }
 
 static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<LogicalProjection *> &projections,
-                                           const MongoScanData &data, idx_t scan_table_index, idx_t &out_col_idx) {
+                                           const MongoScanData &data, mongo_table_index_t scan_table_index,
+                                           idx_t &out_col_idx) {
 	if (!ResolveColumnRefToScan(expr, projections, scan_table_index, out_col_idx)) {
 		return false;
 	}
