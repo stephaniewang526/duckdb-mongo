@@ -12,6 +12,7 @@ Reusable workflows in `.agents/skills/`. When a task matches one of these, read 
 
 - **`.agents/skills/test.md`** — Use when asked to build, run tests, or verify changes. Covers MongoDB setup, incremental builds, and test execution.
 - **`.agents/skills/repro-issue.md`** — Use when asked to investigate, reproduce, or fix a GitHub issue. Covers fetching the issue, root cause analysis, writing a failing test, and verifying the fix.
+- **`.agents/skills/bump-duckdb-version.md`** — Use when asked to update the DuckDB submodule version. Covers updating submodules, fixing compilation, updating CI/CD and README, and running tests.
 
 ## Development Command Quick Reference
 
