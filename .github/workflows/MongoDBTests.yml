@@ -20,7 +20,9 @@ jobs:
     - name: Get DuckDB submodule version
       id: resolve
       run: |
-        version=$(cd duckdb && git describe --tags --always 2>/dev/null || git -C duckdb rev-parse --short HEAD)
+        cd duckdb
+        git fetch --tags --quiet
+        version=$(git describe --tags --exact-match 2>/dev/null || git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)
         echo "duckdb_version=$version" >> "$GITHUB_OUTPUT"
         echo "Resolved DuckDB version: $version"
 
