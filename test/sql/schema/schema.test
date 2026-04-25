@@ -146,6 +146,43 @@ SELECT COUNT(*) FROM mongo_test.empty_collection WHERE _id IS NOT NULL;
 ----
 0
 
+# ============================================================================
+# Parent document fields queryable as JSON
+# ============================================================================
+
+# Test that parent document fields are exposed as VARCHAR columns containing JSON.
+# Previously, nested document fields like "address" were flattened into
+# address_street, address_city, etc., but the parent "address" field itself
+# was not queryable. Users should be able to query both the parent and children.
+
+# Parent document field "address" should be queryable (not NULL) and contain expected data.
+query IT
+SELECT name, address IS NOT NULL FROM mongo_test.users WHERE name = 'Alice';
+----
+Alice	true
+
+query I
+SELECT address LIKE '%New York%' AND address LIKE '%123 Main St%' FROM mongo_test.users WHERE name = 'Alice';
+----
+true
+
+# Parent document field "specs" should be queryable.
+query IT
+SELECT name, specs IS NOT NULL FROM mongo_test.products WHERE name = 'Laptop';
+----
+Laptop	true
+
+query I
+SELECT specs LIKE '%Intel i7%' AND specs LIKE '%16GB%' FROM mongo_test.products WHERE name = 'Laptop';
+----
+true
+
+# Flattened children should still work alongside the parent field.
+query ITTT
+SELECT name, address IS NOT NULL, address_city, address_street FROM mongo_test.users WHERE name = 'Bob';
+----
+Bob	true	Los Angeles	456 Oak Ave
+
 statement ok
 DETACH mongo_test;
 

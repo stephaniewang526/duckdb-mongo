@@ -83,6 +83,7 @@ SELECT column_name, column_type FROM (DESCRIBE mongo_db.duckdb_mongo_test.users)
 ----
 _id	VARCHAR
 active	BOOLEAN
+address	VARCHAR
 address_city	VARCHAR
 address_country	VARCHAR
 address_street	VARCHAR
@@ -99,6 +100,7 @@ SELECT name, type FROM pragma_table_info('mongo_db.duckdb_mongo_test.users') ORD
 ----
 _id	VARCHAR
 active	BOOLEAN
+address	VARCHAR
 address_city	VARCHAR
 address_country	VARCHAR
 address_street	VARCHAR

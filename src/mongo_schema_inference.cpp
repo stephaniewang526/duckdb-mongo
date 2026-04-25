@@ -219,11 +219,12 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 
 		switch (element.type()) {
 		case bsoncxx::type::k_document: {
-			// Recursively process nested document
+			// Recursively process nested document to create flattened child columns.
 			auto nested_doc = element.get_document().value;
 			CollectFieldPaths(nested_doc, full_path, depth + 1, field_types, flattened_to_mongo_path, mongo_path);
-			// Don't store the document itself as JSON when we have nested fields
-			// This prevents VARCHAR from overriding nested STRUCT types
+			// Also expose the parent document itself as a VARCHAR column containing JSON.
+			// This allows users to query the whole sub-document directly.
+			field_types[full_path].push_back(LogicalType::VARCHAR);
 			break;
 		}
 		case bsoncxx::type::k_array: {
