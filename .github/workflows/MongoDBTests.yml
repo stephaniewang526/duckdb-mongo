@@ -8,30 +8,13 @@ defaults:
     shell: bash
 
 jobs:
-  resolve-version:
-    name: Resolve DuckDB version
-    runs-on: ubuntu-latest
-    outputs:
-      duckdb_version: ${{ steps.resolve.outputs.duckdb_version }}
-    steps:
-    - uses: actions/checkout@v4
-      with:
-        submodules: 'true'
-    - name: Get DuckDB submodule version
-      id: resolve
-      run: |
-        cd duckdb
-        git fetch --tags --quiet
-        version=$(git describe --tags --exact-match 2>/dev/null || git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)
-        echo "duckdb_version=$version" >> "$GITHUB_OUTPUT"
-        echo "Resolved DuckDB version: $version"
-
   linux-tests-mongodb:
-    name: Run tests on Linux with MongoDB (${{ needs.resolve-version.outputs.duckdb_version }}, linux_amd64)
-    needs: resolve-version
+    name: Run tests on Linux with MongoDB (${{ matrix.duckdb_version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
+        duckdb_version: ['submodule', 'main']
         arch: ['linux_amd64']
         include:
           - arch: 'linux_amd64'
@@ -90,10 +73,18 @@ jobs:
         fetch-depth: 0
         submodules: 'true'
 
+    - name: Checkout DuckDB to version
+      if: ${{ matrix.duckdb_version != 'submodule' }}
+      run: |
+        cd duckdb
+        git fetch origin ${{ matrix.duckdb_version }}
+        git checkout ${{ matrix.duckdb_version }}
+        echo "Switched DuckDB to $(git log --oneline -1)"
+
     - name: Setup Ccache
       uses: hendrikmuhs/ccache-action@main
       with:
-        key: ${{ github.job }}
+        key: ${{ github.job }}-${{ matrix.duckdb_version }}
         save: ${{ github.ref == 'refs/heads/main' || github.repository != 'stephaniewang526/duckdb-mongo' }}
 
     - name: Setup vcpkg
