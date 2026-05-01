@@ -63,4 +63,14 @@ inline void MongoVectorReferenceSingleValue(Vector &vec, const Value &val) {
 #endif
 }
 
+// DuckDB main made Expression::return_type and BaseExpression::type protected.
+// Provide accessor helpers that compile on both v1.5.x (public fields) and main (getters).
+#ifdef DUCKDB_MAIN_VECTOR_API
+#define MONGO_EXPR_RETURN_TYPE(expr) ((expr).GetReturnType())
+#define MONGO_EXPR_TYPE(expr)        ((expr).GetExpressionType())
+#else
+#define MONGO_EXPR_RETURN_TYPE(expr) ((expr).return_type)
+#define MONGO_EXPR_TYPE(expr)        ((expr).GetExpressionType())
+#endif
+
 } // namespace duckdb
