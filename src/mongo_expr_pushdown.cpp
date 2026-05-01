@@ -1,5 +1,6 @@
 #include "mongo_expr_pushdown.hpp"
 
+#include "mongo_compat.hpp"
 #include "mongo_filter_pushdown.hpp"
 #include "mongo_table_function.hpp"
 
@@ -147,7 +148,7 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 	// Check required argument types if specified
 	if (!mapping.required_arg_types.empty() && mapping.required_arg_types.size() == mapping.arg_count) {
 		for (idx_t i = 0; i < mapping.arg_count; i++) {
-			if (func_expr.children[i]->return_type.id() != mapping.required_arg_types[i]) {
+			if (MONGO_EXPR_RETURN_TYPE(*func_expr.children[i]).id() != mapping.required_arg_types[i]) {
 				return false;
 			}
 		}
@@ -158,7 +159,7 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 		if (func_expr.children.size() != 3) {
 			return false;
 		}
-		auto first_type = func_expr.children[0]->return_type.id();
+		auto first_type = MONGO_EXPR_RETURN_TYPE(*func_expr.children[0]).id();
 		if (first_type != LogicalTypeId::VARCHAR) {
 			return false;
 		}
@@ -347,7 +348,7 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 		}
 
 		// Handle complex comparisons: column-to-column, function calls, etc.
-		ExpressionType comp_type = comp_expr.type;
+		ExpressionType comp_type = MONGO_EXPR_TYPE(comp_expr);
 		string mongo_op;
 		switch (comp_type) {
 		case ExpressionType::COMPARE_GREATERTHAN:
@@ -396,10 +397,10 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 			// Cast constant to match left expression type if needed
 			// This handles cases like YEAR() returning BIGINT but constant being INTEGER
 			Value const_val = right_const.value;
-			if (left_expr->return_type != const_val.type()) {
+			if (MONGO_EXPR_RETURN_TYPE(*left_expr) != const_val.type()) {
 				Value casted_val;
 				string error_message;
-				if (const_val.DefaultTryCastAs(left_expr->return_type, casted_val, &error_message, true)) {
+				if (const_val.DefaultTryCastAs(MONGO_EXPR_RETURN_TYPE(*left_expr), casted_val, &error_message, true)) {
 					BoundConstantExpression casted_const(casted_val);
 					AppendConstantToBSONArray(casted_const, args_array);
 				} else {

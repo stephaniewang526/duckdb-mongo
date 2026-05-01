@@ -608,6 +608,9 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 			++(*state.current);
 			count++;
 		}
+		for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
+			MongoSetVectorSize(output.data[col_idx], count);
+		}
 		output.SetCardinality(count);
 		if (*state.current == *state.end) {
 			state.finished = true;
@@ -655,6 +658,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		vec.SetVectorType(VectorType::FLAT_VECTOR);
 		MongoFlatVectorGetDataMutable<int64_t>(vec)[0] = 0;
 		FlatVector::SetNull(vec, 0, false);
+		MongoSetVectorSize(vec, 1);
 		output.SetCardinality(1);
 		state.finished = true;
 		return;
@@ -691,6 +695,9 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		// effectively dropping this row from the output
 	}
 
+	for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
+		MongoSetVectorSize(output.data[col_idx], count);
+	}
 	output.SetCardinality(count);
 
 	if (state.current && state.end && *state.current == *state.end) {

@@ -15,6 +15,8 @@
 #include <bsoncxx/json.hpp>
 #include <mongocxx/collection.hpp>
 
+#include <mongocxx/pipeline.hpp>
+
 #include <algorithm>
 #include <cctype>
 #include <map>
@@ -103,6 +105,32 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 			}
 		}
 		if (max_depth > 0) {
+			// For LIST(STRUCT) types, merge struct fields from all variants so that
+			// optional fields present in only some documents are not lost.
+			auto inner = ListType::GetChildType(deepest_list_type);
+			if (inner.id() == LogicalTypeId::STRUCT) {
+				std::map<std::string, LogicalType> merged;
+				for (const auto &type : types) {
+					if (type.id() != LogicalTypeId::LIST) {
+						continue;
+					}
+					auto child = ListType::GetChildType(type);
+					if (child.id() != LogicalTypeId::STRUCT) {
+						continue;
+					}
+					for (idx_t i = 0; i < StructType::GetChildCount(child); i++) {
+						auto &name = StructType::GetChildName(child, i);
+						if (merged.find(name) == merged.end()) {
+							merged[name] = StructType::GetChildType(child, i);
+						}
+					}
+				}
+				child_list_t<LogicalType> children;
+				for (auto &pair : merged) {
+					children.push_back({pair.first, pair.second});
+				}
+				return LogicalType::LIST(LogicalType::STRUCT(children));
+			}
 			return deepest_list_type;
 		}
 		for (const auto &type : types) {
@@ -466,18 +494,36 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
                               std::unordered_map<string, string> &column_name_to_mongo_path) {
 	std::unordered_map<std::string, std::vector<LogicalType>> field_types;
 
-	// Sample documents
-	mongocxx::options::find opts;
-	opts.limit(sample_size);
-
-	auto cursor = collection.find({}, opts);
-
+	// Use $sample aggregation for random sampling to better capture heterogeneous schemas.
+	// Collections with optional fields (e.g., completion timestamps only on finished records)
+	// need random sampling to discover all fields, since find().limit() only returns the
+	// first N documents in natural order.
 	int64_t count = 0;
-	for (const auto &doc : cursor) {
-		CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "");
-		count++;
-		if (count >= sample_size) {
-			break;
+	try {
+		mongocxx::pipeline pipe;
+		pipe.sample(static_cast<int32_t>(std::min(sample_size, static_cast<int64_t>(INT32_MAX))));
+		auto cursor = collection.aggregate(pipe);
+		for (const auto &doc : cursor) {
+			CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "");
+			count++;
+			if (count >= sample_size) {
+				break;
+			}
+		}
+	} catch (...) {
+		// Fall back to find().limit() if $sample is unavailable (e.g., views, older MongoDB).
+		count = 0;
+		field_types.clear();
+		column_name_to_mongo_path.clear();
+		mongocxx::options::find opts;
+		opts.limit(sample_size);
+		auto cursor = collection.find({}, opts);
+		for (const auto &doc : cursor) {
+			CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "");
+			count++;
+			if (count >= sample_size) {
+				break;
+			}
 		}
 	}
 

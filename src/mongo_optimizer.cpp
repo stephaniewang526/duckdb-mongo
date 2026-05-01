@@ -505,7 +505,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 			return false;
 		}
 		group_fields.emplace_back(col_name, it->second);
-		group_types.push_back(gexpr->return_type);
+		group_types.push_back(MONGO_EXPR_RETURN_TYPE(*gexpr));
 	}
 
 	// Aggregate expressions must be supported and direct
@@ -583,7 +583,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 				spec.append(bsoncxx::builder::basic::kvp(StringUtil::Format("$%s", kind),
 				                                         StringUtil::Format("$%s", path_it->second)));
 				// Preserve DuckDB aggregate return type
-				out_types.push_back(b.return_type);
+				out_types.push_back(MONGO_EXPR_RETURN_TYPE(b));
 			}
 
 			agg_specs.emplace_back(out_field, spec.extract());
