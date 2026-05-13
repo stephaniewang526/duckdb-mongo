@@ -534,21 +534,43 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 		column_name_to_mongo_path["_id"] = "_id";    // Map _id to itself
 	}
 
-	// Build column names and types from collected field paths
+	// Build column names and types from collected field paths.
+	// Use case-insensitive deduplication: DuckDB's binder uses a case_insensitive_map for
+	// column names, so "clientFullname" and "ClientFullname" would collide. MongoDB field
+	// names are case-sensitive, so random sampling can yield both variants from the same
+	// logical field — producing an intermittent "duplicate column name" binder error.
+	// When a collision is detected, merge the types and keep the first-seen column name.
+	std::unordered_map<std::string, size_t> lower_name_to_idx; // lowercase name -> index in column_names
+
 	// Ensure _id is always first
 	if (field_types.find("_id") != field_types.end()) {
 		column_names.push_back("_id");
 		LogicalType resolved_type = ResolveTypeConflict(field_types["_id"]);
 		column_types.push_back(resolved_type);
+		lower_name_to_idx["_id"] = 0;
 	}
 
 	// Add all other columns (excluding _id which we already added)
 	for (const auto &pair : field_types) {
-		if (pair.first != "_id") {
-			column_names.push_back(pair.first);
-			LogicalType resolved_type = ResolveTypeConflict(pair.second);
-			column_types.push_back(resolved_type);
+		if (pair.first == "_id") {
+			continue;
 		}
+		std::string lower_name = StringUtil::Lower(pair.first);
+		auto it = lower_name_to_idx.find(lower_name);
+		if (it != lower_name_to_idx.end()) {
+			// Case-insensitive collision: merge types into the existing column entry.
+			size_t existing_idx = it->second;
+			std::vector<LogicalType> merged = {column_types[existing_idx]};
+			for (const auto &t : pair.second) {
+				merged.push_back(t);
+			}
+			column_types[existing_idx] = ResolveTypeConflict(merged);
+			continue;
+		}
+		lower_name_to_idx[lower_name] = column_names.size();
+		column_names.push_back(pair.first);
+		LogicalType resolved_type = ResolveTypeConflict(pair.second);
+		column_types.push_back(resolved_type);
 	}
 
 	// Ensure we have at least one column (should always have _id, but double-check)

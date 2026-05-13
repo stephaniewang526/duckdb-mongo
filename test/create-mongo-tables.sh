@@ -493,6 +493,28 @@ db.schema_test_types.insertOne({
   created: 'TIMESTAMP'
 });
 
+// Collection for testing case-variant field name deduplication (issue #35).
+// MongoDB is case-sensitive so 'clientFullname' and 'ClientFullname' are distinct fields.
+// DuckDB is case-insensitive, so inferring both would produce a duplicate column name error.
+// The two documents deliberately use different cases for the same logical field to reproduce
+// the intermittent 'duplicate column name' binder error seen with random $sample results.
+db.case_variant_fields_test.insertMany([
+  {
+    _id: ObjectId('507f1f77bcf86cd799439099'),
+    case_data: {
+      clientFullname: 'John Doe',
+      status: 'active'
+    }
+  },
+  {
+    _id: ObjectId('507f1f77bcf86cd79943909a'),
+    case_data: {
+      ClientFullname: 'Jane Smith',
+      status: 'inactive'
+    }
+  }
+]);
+
 print('Test database created successfully!');
 print('Database: ' + db.getName());
 print('Collections: ' + db.getCollectionNames().join(', '));
@@ -500,7 +522,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, string_id_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types"
+echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, string_id_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types, case_variant_fields_test"
 echo ""
 
 # Export environment variables for tests

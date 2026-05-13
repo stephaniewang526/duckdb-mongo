@@ -1,0 +1,31 @@
+# name: test/sql/schema/case_variant_fields.test
+# description: Test that case-variant field names do not produce "duplicate column name" binder errors
+# group: [schema]
+#
+# Reproduces issue #35: MongoDB field names are case-sensitive, so "clientFullname" and
+# "ClientFullname" are distinct fields. DuckDB column names are case-insensitive, so when
+# $sample returns documents with both variants the binder would throw:
+#   Binder Error: table "mongo_scan" has duplicate column name "case_data_clientFullname"
+# The fix deduplicates column names case-insensitively during schema inference.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# Querying a collection where one doc has case_data.clientFullname and another has
+# case_data.ClientFullname must not crash with a "duplicate column name" binder error.
+query I
+SELECT COUNT(*) FROM mongo_test.case_variant_fields_test;
+----
+2
+
+# The deduplication keeps one case variant for the column. DuckDB resolves column
+# references case-insensitively, so any casing works in the query. Only the document
+# whose case_data field matches the kept MongoDB path will return a non-NULL value.
+query I
+SELECT COUNT(*) FROM mongo_test.case_variant_fields_test WHERE case_data_clientfullname IS NOT NULL;
+----
+1
