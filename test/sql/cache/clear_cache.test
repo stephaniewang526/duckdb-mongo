@@ -41,27 +41,28 @@ ATTACH 'host=localhost port=27017 database=duckdb_mongo_test' AS test_mongo (TYP
 # Query collections initially - this populates the collection cache
 # Count only tables in the specific schema to avoid dependencies on other attached databases
 query I
-SELECT COUNT(*) FROM information_schema.tables 
-WHERE table_catalog = 'test_mongo' 
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test';
 ----
-16
+17
 
 # Query collections again - should use cached data
 query I
-SELECT COUNT(*) FROM information_schema.tables 
-WHERE table_catalog = 'test_mongo' 
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test';
 ----
-16
+17
 
 # Get list of collections (this uses cached collection names)
 query T
-SELECT table_name FROM information_schema.tables 
-WHERE table_catalog = 'test_mongo' 
+SELECT table_name FROM information_schema.tables
+WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
 ORDER BY table_name;
 ----
+case_variant_fields_test
 decimal_test
 deeply_nested
 empty_collection
@@ -89,19 +90,20 @@ SELECT * FROM mongo_clear_cache();
 
 # Query collections again - should fetch fresh data from MongoDB
 query I
-SELECT COUNT(*) FROM information_schema.tables 
-WHERE table_catalog = 'test_mongo' 
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test';
 ----
-16
+17
 
 # Verify we get the same collections (proving fresh data was fetched, not stale cache)
 query T
-SELECT table_name FROM information_schema.tables 
-WHERE table_catalog = 'test_mongo' 
+SELECT table_name FROM information_schema.tables
+WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
 ORDER BY table_name;
 ----
+case_variant_fields_test
 decimal_test
 deeply_nested
 empty_collection

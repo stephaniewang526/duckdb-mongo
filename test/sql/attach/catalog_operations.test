@@ -30,6 +30,7 @@ USE mongo_db.duckdb_mongo_test;
 query I
 SHOW TABLES;
 ----
+case_variant_fields_test
 decimal_test
 deeply_nested
 empty_collection
@@ -58,6 +59,7 @@ query III
 SELECT database, schema, name FROM (SHOW ALL TABLES) ORDER BY database, name;
 ----
 memory	main	test_memory_table
+mongo_db	duckdb_mongo_test	case_variant_fields_test
 mongo_db	duckdb_mongo_test	decimal_test
 mongo_db	duckdb_mongo_test	deeply_nested
 mongo_db	duckdb_mongo_test	empty_collection
@@ -124,10 +126,10 @@ users
 
 # Total collections in test database
 query I
-SELECT COUNT(*) FROM duckdb_views() 
+SELECT COUNT(*) FROM duckdb_views()
 WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test';
 ----
-16
+17
 
 query I
 SELECT column_name FROM duckdb_columns() 
