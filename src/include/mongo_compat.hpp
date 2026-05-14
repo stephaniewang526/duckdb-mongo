@@ -4,16 +4,11 @@
 // Uses __has_include to detect the target DuckDB version at compile time.
 
 #include "duckdb/common/types/vector.hpp"
+#include "duckdb/planner/table_filter.hpp"
 
 // FlatVector was moved to a separate header on DuckDB main.
 #if __has_include("duckdb/common/vector/flat_vector.hpp")
 #include "duckdb/common/vector/flat_vector.hpp"
-#endif
-
-// --- ExpressionFilter detection ---
-// DuckDB main wraps all scan filters in ExpressionFilter; v1.5.x uses ConstantFilter directly.
-#if __has_include("duckdb/planner/filter/expression_filter.hpp")
-#define DUCKDB_HAS_EXPRESSION_FILTER 1
 #endif
 
 // --- Vector API compatibility ---

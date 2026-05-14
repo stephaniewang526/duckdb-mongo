@@ -13,7 +13,9 @@
 #include "duckdb/common/types/timestamp.hpp"
 
 // DuckDB main uses ExpressionFilter wrapping BoundComparisonExpression instead of ConstantFilter.
-#ifdef DUCKDB_HAS_EXPRESSION_FILTER
+// These headers only exist in their current form on DuckDB main (v1.5.x also has expression_filter.hpp
+// but lacks the static helpers IsComparison/Left/Right on BoundComparisonExpression).
+#ifdef DUCKDB_MAIN_VECTOR_API
 #include "duckdb/planner/filter/expression_filter.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression/bound_constant_expression.hpp"
@@ -315,7 +317,7 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 		return ConvertSingleFilterToMongo(*dyn_filter.filter_data->filter, column_name, column_type, objectid_columns);
 	}
 #endif // !DUCKDB_MAIN_VECTOR_API
-#ifdef DUCKDB_HAS_EXPRESSION_FILTER
+#ifdef DUCKDB_MAIN_VECTOR_API
 	case TableFilterType::EXPRESSION_FILTER: {
 		// DuckDB main wraps all scan filters in ExpressionFilter.
 		const auto &expr_filter = filter.Cast<ExpressionFilter>();
@@ -417,7 +419,7 @@ static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &fi
 		}
 		break;
 	}
-#endif // DUCKDB_HAS_EXPRESSION_FILTER
+#endif // DUCKDB_MAIN_VECTOR_API
 	default:
 		break;
 	}
