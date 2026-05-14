@@ -1,6 +1,7 @@
 # name: test/sql/schema/case_variant_fields.test
 # description: Test that case-variant field names do not produce "duplicate column name" binder errors
 # group: [schema]
+
 #
 # Reproduces issue #35: MongoDB field names are case-sensitive, so "clientFullname" and
 # "ClientFullname" are distinct fields. DuckDB column names are case-insensitive, so when
