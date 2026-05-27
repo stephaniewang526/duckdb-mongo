@@ -2,8 +2,24 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/catalog/catalog_transaction.hpp"
+#include <iomanip>
+#include <sstream>
 
 namespace duckdb {
+
+static string PercentEncodeUserInfo(const string &s) {
+	std::ostringstream out;
+	out << std::hex << std::uppercase;
+	for (unsigned char c : s) {
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.' ||
+		    c == '_' || c == '~') {
+			out << c;
+		} else {
+			out << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(c);
+		}
+	}
+	return out.str();
+}
 
 unique_ptr<SecretEntry> GetMongoSecret(ClientContext &context, const string &secret_name) {
 	auto &secret_manager = SecretManager::Get(context);
@@ -47,9 +63,9 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 	// Build MongoDB connection string
 	string connection_string = use_srv ? "mongodb+srv://" : "mongodb://";
 	if (!user.empty() || !password.empty()) {
-		connection_string += user;
+		connection_string += PercentEncodeUserInfo(user);
 		if (!password.empty()) {
-			connection_string += ":" + password;
+			connection_string += ":" + PercentEncodeUserInfo(password);
 		}
 		connection_string += "@";
 	}
