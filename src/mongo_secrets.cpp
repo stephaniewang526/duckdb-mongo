@@ -24,16 +24,7 @@ static string PercentEncodeUserInfo(const string &s) {
 unique_ptr<SecretEntry> GetMongoSecret(ClientContext &context, const string &secret_name) {
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	// FIXME: this should be adjusted once the `GetSecretByName` API supports this use case
-	auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name, "memory");
-	if (secret_entry) {
-		return secret_entry;
-	}
-	secret_entry = secret_manager.GetSecretByName(transaction, secret_name, "local_file");
-	if (secret_entry) {
-		return secret_entry;
-	}
-	return nullptr;
+	return secret_manager.GetSecretByName(transaction, secret_name);
 }
 
 string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string &attach_path) {
