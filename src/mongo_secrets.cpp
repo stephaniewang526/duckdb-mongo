@@ -2,22 +2,29 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "duckdb/catalog/catalog_transaction.hpp"
+#include <iomanip>
+#include <sstream>
 
 namespace duckdb {
+
+static string PercentEncodeUserInfo(const string &s) {
+	std::ostringstream out;
+	out << std::hex << std::uppercase;
+	for (unsigned char c : s) {
+		if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '.' ||
+		    c == '_' || c == '~') {
+			out << c;
+		} else {
+			out << '%' << std::setw(2) << std::setfill('0') << static_cast<int>(c);
+		}
+	}
+	return out.str();
+}
 
 unique_ptr<SecretEntry> GetMongoSecret(ClientContext &context, const string &secret_name) {
 	auto &secret_manager = SecretManager::Get(context);
 	auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
-	// FIXME: this should be adjusted once the `GetSecretByName` API supports this use case
-	auto secret_entry = secret_manager.GetSecretByName(transaction, secret_name, "memory");
-	if (secret_entry) {
-		return secret_entry;
-	}
-	secret_entry = secret_manager.GetSecretByName(transaction, secret_name, "local_file");
-	if (secret_entry) {
-		return secret_entry;
-	}
-	return nullptr;
+	return secret_manager.GetSecretByName(transaction, secret_name);
 }
 
 string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string &attach_path) {
@@ -47,9 +54,9 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 	// Build MongoDB connection string
 	string connection_string = use_srv ? "mongodb+srv://" : "mongodb://";
 	if (!user.empty() || !password.empty()) {
-		connection_string += user;
+		connection_string += PercentEncodeUserInfo(user);
 		if (!password.empty()) {
-			connection_string += ":" + password;
+			connection_string += ":" + PercentEncodeUserInfo(password);
 		}
 		connection_string += "@";
 	}
