@@ -57,55 +57,49 @@ install(
   LIBRARY DESTINATION "${INSTALL_LIB_DIR}"
   ARCHIVE DESTINATION "${INSTALL_LIB_DIR}")
 
-# Add C++ integration test for MongoDB Atlas
-add_executable(test_atlas_integration
-  test/integration/test_atlas_integration.cpp
-  ${EXTENSION_SOURCES}
-)
+# Integration test is only built when developing the extension standalone.
+# When embedded via duckdb_extension_load, CMAKE_PROJECT_NAME is the host
+# project name, so we skip this target to avoid missing test-framework headers.
+if(CMAKE_PROJECT_NAME STREQUAL "${TARGET_NAME}")
+  add_executable(test_atlas_integration
+    test/integration/test_atlas_integration.cpp
+    ${EXTENSION_SOURCES}
+  )
 
-# Set output directory - force debug builds to go to build/debug/
-# CMAKE_CURRENT_SOURCE_DIR is the directory containing this CMakeLists.txt (project root)
-# For debug builds, output to build/debug/ relative to project root
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-  set(DEBUG_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/debug")
-  # Ensure the directory exists
-  file(MAKE_DIRECTORY "${DEBUG_OUTPUT_DIR}")
-  set_target_properties(test_atlas_integration PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${DEBUG_OUTPUT_DIR}"
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(DEBUG_OUTPUT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/build/debug")
+    file(MAKE_DIRECTORY "${DEBUG_OUTPUT_DIR}")
+    set_target_properties(test_atlas_integration PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${DEBUG_OUTPUT_DIR}"
+    )
+    message(STATUS "test_atlas_integration (DEBUG) will be built in: ${DEBUG_OUTPUT_DIR}")
+  else()
+    set_target_properties(test_atlas_integration PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/extension/mongo"
+    )
+    message(STATUS "test_atlas_integration (RELEASE) will be built in: ${CMAKE_BINARY_DIR}/extension/mongo")
+  endif()
+
+  target_link_libraries(test_atlas_integration
+    duckdb_static
+    $<IF:$<TARGET_EXISTS:duckdb_generated_extension_loader>,duckdb_generated_extension_loader,dummy_static_extension_loader>
+    $<$<TARGET_EXISTS:core_functions_extension>:core_functions_extension>
+    $<$<TARGET_EXISTS:parquet_extension>:parquet_extension>
+    $<$<TARGET_EXISTS:tpch_extension>:tpch_extension>
+    $<$<TARGET_EXISTS:jemalloc_extension>:jemalloc_extension>
+    $<IF:$<TARGET_EXISTS:mongo::mongocxx_static>,mongo::mongocxx_static,mongo::mongocxx_shared>
+    $<IF:$<TARGET_EXISTS:mongo::bsoncxx_static>,mongo::bsoncxx_static,mongo::bsoncxx_shared>
   )
-  message(STATUS "test_atlas_integration (DEBUG) will be built in: ${DEBUG_OUTPUT_DIR}")
-else()
-  # Release builds can use the default extension location
-  set_target_properties(test_atlas_integration PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/extension/mongo"
+
+  target_include_directories(test_atlas_integration PRIVATE
+    src/include
+    duckdb/src/include
+    duckdb
+    duckdb/third_party/catch
+    duckdb/test/include
   )
-  message(STATUS "test_atlas_integration (RELEASE) will be built in: ${CMAKE_BINARY_DIR}/extension/mongo")
+
+  target_compile_options(test_atlas_integration PRIVATE -g -O0)
+
+  add_test(NAME test_atlas_integration COMMAND test_atlas_integration "[mongo][atlas][integration]")
 endif()
-
-# Link against DuckDB, its extension loader, statically-linked extensions, and MongoDB drivers.
-# duckdb_generated_extension_loader provides LoadAllExtensions which loads core_functions, parquet, etc.
-target_link_libraries(test_atlas_integration
-  duckdb_static
-  $<IF:$<TARGET_EXISTS:duckdb_generated_extension_loader>,duckdb_generated_extension_loader,dummy_static_extension_loader>
-  $<$<TARGET_EXISTS:core_functions_extension>:core_functions_extension>
-  $<$<TARGET_EXISTS:parquet_extension>:parquet_extension>
-  $<$<TARGET_EXISTS:tpch_extension>:tpch_extension>
-  $<$<TARGET_EXISTS:jemalloc_extension>:jemalloc_extension>
-  $<IF:$<TARGET_EXISTS:mongo::mongocxx_static>,mongo::mongocxx_static,mongo::mongocxx_shared>
-  $<IF:$<TARGET_EXISTS:mongo::bsoncxx_static>,mongo::bsoncxx_static,mongo::bsoncxx_shared>
-)
-
-# Include directories
-target_include_directories(test_atlas_integration PRIVATE
-  src/include
-  duckdb/src/include
-  duckdb
-  duckdb/third_party/catch
-  duckdb/test/include
-)
-
-# Ensure debug symbols are enabled for debugging (always, regardless of build type)
-target_compile_options(test_atlas_integration PRIVATE -g -O0)
-
-# Add test to CTest (optional)
-add_test(NAME test_atlas_integration COMMAND test_atlas_integration "[mongo][atlas][integration]")
