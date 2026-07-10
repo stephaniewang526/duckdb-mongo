@@ -33,7 +33,7 @@ struct BindingMapRule {
 };
 
 static bool IsMongoScan(const LogicalGet &get) {
-	return StringUtil::CIEquals(get.function.name, "mongo_scan") && get.bind_data &&
+	return StringUtil::CIEquals(MONGO_FUNCTION_NAME(get.function), "mongo_scan") && get.bind_data &&
 	       dynamic_cast<MongoScanData *>(get.bind_data.get());
 }
 
@@ -51,11 +51,12 @@ static void ApplyBindingRulesToExpression(unique_ptr<Expression> &expr, const ve
 	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
 	    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &child) {
 		    (void)child;
+		    auto &binding = MongoColumnBindingMutable(colref);
 		    for (const auto &rule : rules) {
-			    if (colref.binding.table_index == rule.from_table_index) {
-				    colref.binding.table_index = rule.to_table_index;
-				    colref.binding.column_index =
-				        decltype(colref.binding.column_index)(idx_t(colref.binding.column_index) + rule.column_offset);
+			    if (binding.table_index == rule.from_table_index) {
+				    binding.table_index = rule.to_table_index;
+				    binding.column_index =
+				        decltype(binding.column_index)(idx_t(binding.column_index) + rule.column_offset);
 			    }
 		    }
 	    });
@@ -181,10 +182,11 @@ static bool IsSimpleColumnRef(const Expression &expr, mongo_table_index_t expect
 		return false;
 	}
 	auto &colref = expr.Cast<BoundColumnRefExpression>();
-	if (colref.binding.table_index != expected_table_index) {
+	const auto &binding = MongoColumnBinding(colref);
+	if (binding.table_index != expected_table_index) {
 		return false;
 	}
-	out_col_idx = colref.binding.column_index;
+	out_col_idx = binding.column_index;
 	return true;
 }
 
@@ -193,7 +195,7 @@ static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalP
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return false;
 	}
-	auto binding = expr.Cast<BoundColumnRefExpression>().binding;
+	auto binding = MongoColumnBinding(expr.Cast<BoundColumnRefExpression>());
 	for (auto *proj : projections) {
 		if (!proj) {
 			continue;
@@ -208,7 +210,7 @@ static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalP
 		if (proj_expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 			return false;
 		}
-		binding = proj_expr.Cast<BoundColumnRefExpression>().binding;
+		binding = MongoColumnBinding(proj_expr.Cast<BoundColumnRefExpression>());
 	}
 	if (binding.table_index != scan_table_index) {
 		return false;
@@ -223,7 +225,7 @@ static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<
 	if (!ResolveColumnRefToScan(expr, projections, scan_table_index, out_col_idx)) {
 		return false;
 	}
-	const auto expr_name = expr.GetName();
+	const auto expr_name = MongoExprName(expr);
 	if (out_col_idx < data.column_names.size() && StringUtil::CIEquals(data.column_names[out_col_idx], expr_name)) {
 		return true;
 	}
@@ -251,13 +253,14 @@ static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<
 
 static bool GetOrderColumnName(const Expression &expr, string &name) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-		name = expr.GetName();
+		name = MongoExprName(expr);
 		return true;
 	}
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 		auto &cast = expr.Cast<BoundCastExpression>();
-		if (cast.child) {
-			return GetOrderColumnName(*cast.child, name);
+		auto *cast_child = MongoCastChild(cast);
+		if (cast_child) {
+			return GetOrderColumnName(*cast_child, name);
 		}
 	}
 	return false;
@@ -267,24 +270,25 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const Log
                                  const vector<LogicalProjection *> &projections, const MongoScanData &data,
                                  idx_t &out_child_col, string &out_kind) {
 	// No DISTINCT/FILTER/ORDER BY in MVP
-	if (aggr.IsDistinct() || aggr.filter || aggr.order_bys) {
+	if (aggr.IsDistinct() || MongoAggregateFilter(aggr) || MongoAggregateOrderBys(aggr)) {
 		return false;
 	}
 
-	auto fname = StringUtil::Lower(MONGO_FUNCTION_NAME(aggr.function));
+	const auto &children = MongoAggregateChildren(aggr);
+	auto fname = StringUtil::Lower(MONGO_FUNCTION_NAME(MongoAggregateFunction(aggr)));
 	if (fname == "count_star") {
 		out_kind = "count_star";
 		out_child_col = DConstants::INVALID_INDEX;
-		return aggr.children.empty();
+		return children.empty();
 	}
 
 	// Allow COUNT(col) only if it is a direct column ref (still non-distinct, no filter)
 	if (fname == "count") {
-		if (aggr.children.size() != 1) {
+		if (children.size() != 1) {
 			return false;
 		}
 		idx_t col_idx;
-		if (!ResolveColumnRefToScanWithName(*aggr.children[0], projections, data, get.table_index, col_idx)) {
+		if (!ResolveColumnRefToScanWithName(*children[0], projections, data, get.table_index, col_idx)) {
 			return false;
 		}
 		out_kind = "count";
@@ -292,11 +296,11 @@ static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const Log
 		return true;
 	}
 	if (fname == "sum" || fname == "min" || fname == "max" || fname == "avg") {
-		if (aggr.children.size() != 1) {
+		if (children.size() != 1) {
 			return false;
 		}
 		idx_t col_idx;
-		if (!ResolveColumnRefToScanWithName(*aggr.children[0], projections, data, get.table_index, col_idx)) {
+		if (!ResolveColumnRefToScanWithName(*children[0], projections, data, get.table_index, col_idx)) {
 			return false;
 		}
 		out_kind = fname;
@@ -614,7 +618,8 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 	}
 
 	// Create a new LogicalGet with table_index = group_index to preserve group bindings.
-	auto replacement = make_uniq<LogicalGet>(aggr.group_index, get.function, std::move(new_bind), out_types, out_names);
+	auto replacement = make_uniq<LogicalGet>(aggr.group_index, get.function, std::move(new_bind), out_types,
+	                                         MongoMakeColumnNames(out_names));
 	replacement->named_parameters = get.named_parameters;
 	replacement->named_parameters["pipeline"] = Value(pipeline_json);
 	replacement->parameters = get.parameters;

@@ -24,12 +24,10 @@ namespace {
 // Helper function to unwrap CAST expressions and get the underlying column reference
 static const BoundColumnRefExpression *UnwrapCastToColumnRef(const Expression &expr) {
 	const Expression *current = &expr;
-	// Unwrap CAST expressions recursively
 	while (current->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 		auto &cast_expr = current->Cast<BoundCastExpression>();
-		current = cast_expr.child.get();
+		current = MongoCastChild(cast_expr);
 	}
-	// Check if we have a column reference
 	if (current->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
 		return &current->Cast<BoundColumnRefExpression>();
 	}
@@ -39,7 +37,7 @@ static const BoundColumnRefExpression *UnwrapCastToColumnRef(const Expression &e
 // Helper function to convert a column reference to MongoDB field path
 static string GetMongoPathForColumn(const BoundColumnRefExpression &col_ref, const vector<string> &column_names,
                                     const unordered_map<string, string> &column_name_to_mongo_path) {
-	idx_t col_idx = col_ref.binding.column_index;
+	idx_t col_idx = MongoColumnBinding(col_ref).column_index;
 	D_ASSERT(col_idx < column_names.size());
 	if (col_idx >= column_names.size()) {
 		return "";
@@ -65,7 +63,7 @@ static string GetMongoPathFromExpression(const Expression &expr, const vector<st
 // Helper function to append a constant value to a BSON array
 static void AppendConstantToBSONArray(const BoundConstantExpression &const_expr,
                                       bsoncxx::builder::basic::array &array_builder) {
-	const Value &val = const_expr.value;
+	const Value &val = MongoConstantValue(const_expr);
 	switch (val.type().id()) {
 	case LogicalTypeId::VARCHAR: {
 		string str_val = val.GetValue<string>();
@@ -138,17 +136,15 @@ static const MongoFunctionMapping *FindFunctionMapping(const string &func_name) 
 
 // Helper function to validate function signature
 static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, const MongoFunctionMapping &mapping) {
-	// Check argument count
-	// Note: This logic will need to be extended to handle function overloads i.e. function with the same name that take
-	// different argument types.
-	if (func_expr.children.size() != mapping.arg_count) {
+	const auto &children = MongoFuncChildren(func_expr);
+	if (children.size() != mapping.arg_count) {
 		return false;
 	}
 
 	// Check required argument types if specified
 	if (!mapping.required_arg_types.empty() && mapping.required_arg_types.size() == mapping.arg_count) {
 		for (idx_t i = 0; i < mapping.arg_count; i++) {
-			if (MONGO_EXPR_RETURN_TYPE(*func_expr.children[i]).id() != mapping.required_arg_types[i]) {
+			if (MONGO_EXPR_RETURN_TYPE(*children[i]).id() != mapping.required_arg_types[i]) {
 				return false;
 			}
 		}
@@ -156,15 +152,15 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 
 	if (mapping.mongo_operator == "$substrCP") {
 		// Expect substring(string, start, length) with numeric constants for start/length.
-		if (func_expr.children.size() != 3) {
+		if (children.size() != 3) {
 			return false;
 		}
-		auto first_type = MONGO_EXPR_RETURN_TYPE(*func_expr.children[0]).id();
+		auto first_type = MONGO_EXPR_RETURN_TYPE(*children[0]).id();
 		if (first_type != LogicalTypeId::VARCHAR) {
 			return false;
 		}
-		auto start_class = func_expr.children[1]->GetExpressionClass();
-		auto len_class = func_expr.children[2]->GetExpressionClass();
+		auto start_class = children[1]->GetExpressionClass();
+		auto len_class = children[2]->GetExpressionClass();
 		return start_class == ExpressionClass::BOUND_CONSTANT && len_class == ExpressionClass::BOUND_CONSTANT;
 	}
 
@@ -172,7 +168,7 @@ static bool ValidateFunctionSignature(const BoundFunctionExpression &func_expr, 
 }
 
 static bool IsSafeMongoFunction(const BoundFunctionExpression &func_expr) {
-	const MongoFunctionMapping *mapping = FindFunctionMapping(MONGO_FUNCTION_NAME(func_expr.function));
+	const MongoFunctionMapping *mapping = FindFunctionMapping(MONGO_FUNCTION_NAME(MongoFuncFunction(func_expr)));
 	if (!mapping) {
 		return false;
 	}
@@ -182,10 +178,11 @@ static bool IsSafeMongoFunction(const BoundFunctionExpression &func_expr) {
 	if (!ValidateFunctionSignature(func_expr, *mapping)) {
 		return false;
 	}
-	auto &start_expr = func_expr.children[1]->Cast<BoundConstantExpression>();
-	auto &len_expr = func_expr.children[2]->Cast<BoundConstantExpression>();
-	auto start_val = start_expr.value.GetValue<int64_t>();
-	auto len_val = len_expr.value.GetValue<int64_t>();
+	const auto &children = MongoFuncChildren(func_expr);
+	auto &start_expr = children[1]->Cast<BoundConstantExpression>();
+	auto &len_expr = children[2]->Cast<BoundConstantExpression>();
+	auto start_val = MongoConstantValue(start_expr).GetValue<int64_t>();
+	auto len_val = MongoConstantValue(len_expr).GetValue<int64_t>();
 	return start_val >= 1 && len_val >= 0;
 }
 
@@ -208,7 +205,7 @@ static bool IsSafeMongoExpr(const Expression &expr) {
 static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr, const vector<string> &column_names,
                                        const unordered_map<string, string> &column_name_to_mongo_path,
                                        bsoncxx::builder::basic::document &result_builder) {
-	const string func_name = MONGO_FUNCTION_NAME(func_expr.function);
+	const string func_name = MONGO_FUNCTION_NAME(MongoFuncFunction(func_expr));
 
 	// Find function mapping
 	const MongoFunctionMapping *mapping = FindFunctionMapping(func_name);
@@ -223,9 +220,10 @@ static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr,
 
 	// Build arguments array
 	bsoncxx::builder::basic::array args;
+	const auto &children = MongoFuncChildren(func_expr);
 
-	for (idx_t i = 0; i < func_expr.children.size(); i++) {
-		auto &arg = func_expr.children[i];
+	for (idx_t i = 0; i < children.size(); i++) {
+		auto &arg = children[i];
 
 		// Check if argument is a column reference
 		const BoundColumnRefExpression *col_ref = UnwrapCastToColumnRef(*arg);
@@ -242,7 +240,7 @@ static bool ConvertFunctionToMongoExpr(const BoundFunctionExpression &func_expr,
 		if (arg->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 			auto &const_expr = arg->Cast<BoundConstantExpression>();
 			if (mapping->mongo_operator == "$substrCP" && i == 1) {
-				auto start_val = const_expr.value.GetValue<int64_t>();
+				auto start_val = MongoConstantValue(const_expr).GetValue<int64_t>();
 				args.append(bsoncxx::types::b_int64 {start_val - 1});
 			} else {
 				AppendConstantToBSONArray(const_expr, args);
@@ -270,13 +268,13 @@ static bool IsSimpleColumnToConstantComparison(const Expression &expr) {
 	// Unwrap CAST on left side
 	while (left_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 		auto &cast_expr = left_expr->Cast<BoundCastExpression>();
-		left_expr = cast_expr.child.get();
+		left_expr = MongoCastChild(cast_expr);
 	}
 
 	// Unwrap CAST on right side
 	while (right_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 		auto &cast_expr = right_expr->Cast<BoundCastExpression>();
-		right_expr = cast_expr.child.get();
+		right_expr = MongoCastChild(cast_expr);
 	}
 
 	bool left_is_column = left_expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
@@ -322,13 +320,13 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 		// Unwrap CAST on left side
 		while (left_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 			auto &cast_expr = left_expr->Cast<BoundCastExpression>();
-			left_expr = cast_expr.child.get();
+			left_expr = MongoCastChild(cast_expr);
 		}
 
 		// Unwrap CAST on right side
 		while (right_expr->GetExpressionClass() == ExpressionClass::BOUND_CAST) {
 			auto &cast_expr = right_expr->Cast<BoundCastExpression>();
-			right_expr = cast_expr.child.get();
+			right_expr = MongoCastChild(cast_expr);
 		}
 
 		bool left_is_column = left_expr->GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF;
@@ -384,7 +382,7 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 
 		if (right_expr->GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
 			auto &right_const = right_expr->Cast<BoundConstantExpression>();
-			Value const_val = right_const.value;
+			Value const_val = MongoConstantValue(right_const);
 			if (MONGO_EXPR_RETURN_TYPE(*left_expr) != const_val.type()) {
 				Value casted_val;
 				string error_message;

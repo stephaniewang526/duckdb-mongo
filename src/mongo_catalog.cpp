@@ -1,4 +1,5 @@
 #include "mongo_catalog.hpp"
+#include "mongo_compat.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_schema_entry.hpp"
 #include "mongo_secrets.hpp"
@@ -44,19 +45,25 @@ public:
 	}
 
 public:
+#ifdef DUCKDB_MAIN_VECTOR_API
+	unique_ptr<CatalogEntry> CreateDefaultEntry(ClientContext &context, const Identifier &entry_name) override {
+		string name_str = entry_name.GetIdentifierName();
+#else
 	unique_ptr<CatalogEntry> CreateDefaultEntry(ClientContext &context, const string &entry_name) override {
+		const string &name_str = entry_name;
+#endif
 		EnsureCollectionsLoaded();
 		for (const auto &collection_name : collection_names) {
-			if (StringUtil::CIEquals(entry_name, collection_name)) {
+			if (StringUtil::CIEquals(name_str, collection_name)) {
 				return CreateEntryForCollection(context, collection_name);
 			}
 		}
 		return nullptr;
 	}
 
-	vector<string> GetDefaultEntries() override {
+	MongoDefaultEntryList GetDefaultEntries() override {
 		EnsureCollectionsLoaded();
-		return collection_names;
+		return MongoMakeDefaultEntries(collection_names);
 	}
 
 	unique_ptr<CatalogEntry> CreateEntryForCollection(ClientContext &context, const string &collection_name) {
@@ -65,8 +72,8 @@ public:
 			auto cached_info = mongo_catalog->GetCachedViewInfo(database_name, collection_name);
 			if (cached_info) {
 				auto info_copy = make_uniq<CreateViewInfo>();
-				info_copy->schema = schema.name;
-				info_copy->view_name = collection_name;
+				MongoSetViewSchema(*info_copy, MongoCatalogEntryName(schema));
+				MongoSetViewName(*info_copy, collection_name);
 				info_copy->sql = cached_info->sql;
 				info_copy->query = cached_info->query
 				                       ? unique_ptr_cast<SQLStatement, SelectStatement>(cached_info->query->Copy())
@@ -84,8 +91,8 @@ public:
 		}
 
 		auto result = make_uniq<CreateViewInfo>();
-		result->schema = schema.name;
-		result->view_name = collection_name;
+		MongoSetViewSchema(*result, MongoCatalogEntryName(schema));
+		MongoSetViewName(*result, collection_name);
 
 		auto escape_sql_string = [](const string &str) -> string {
 			string result;
@@ -223,14 +230,13 @@ void MongoCatalog::Initialize(bool load_builtin) {
 optional_ptr<CatalogEntry> MongoCatalog::CreateSchema(CatalogTransaction transaction, CreateSchemaInfo &info) {
 	lock_guard<mutex> lock(schemas_lock);
 
-	// Check if schema already exists
-	auto it = schemas.find(info.schema);
+	auto schema_name = MongoGetSchemaName(info);
+	auto it = schemas.find(schema_name);
 	if (it != schemas.end()) {
 		switch (info.on_conflict) {
 		case OnCreateConflict::ERROR_ON_CONFLICT:
-			throw CatalogException::EntryAlreadyExists(CatalogType::SCHEMA_ENTRY, info.schema);
+			throw CatalogException("Schema with name \"%s\" already exists", schema_name);
 		case OnCreateConflict::REPLACE_ON_CONFLICT:
-			// Remove existing schema
 			schemas.erase(it);
 			break;
 		case OnCreateConflict::IGNORE_ON_CONFLICT:
@@ -240,10 +246,9 @@ optional_ptr<CatalogEntry> MongoCatalog::CreateSchema(CatalogTransaction transac
 		}
 	}
 
-	// Create new schema entry
 	auto schema_entry = make_uniq<MongoSchemaEntry>(*this, info);
 	auto result = schema_entry.get();
-	schemas[info.schema] = shared_ptr<MongoSchemaEntry>(schema_entry.release());
+	schemas[schema_name] = shared_ptr<MongoSchemaEntry>(schema_entry.release());
 
 	return result;
 }
@@ -266,7 +271,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	if (!database_name.empty()) {
 		// Specific database attached - create only that schema
 		CreateSchemaInfo schema_info;
-		schema_info.schema = database_name;
+		MongoSetSchemaName(schema_info, database_name);
 		schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 		auto schema_entry = CreateSchema(system_transaction, schema_info);
 		if (schema_entry) {
@@ -285,7 +290,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 	// No specific database - create schema for each MongoDB database
 	// First create "main" schema with empty generator for DuckDB consistency
 	CreateSchemaInfo main_schema_info;
-	main_schema_info.schema = "main";
+	MongoSetSchemaName(main_schema_info, "main");
 	main_schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 	auto main_schema_entry = CreateSchema(system_transaction, main_schema_info);
 	if (main_schema_entry) {
@@ -301,7 +306,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 		}
 
 		CreateSchemaInfo schema_info;
-		schema_info.schema = schema_name;
+		MongoSetSchemaName(schema_info, schema_name);
 		schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 		auto schema_entry = CreateSchema(system_transaction, schema_info);
 		if (schema_entry) {
@@ -355,7 +360,7 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 		if (database_name.empty()) {
 			try {
 				CreateSchemaInfo schema_info;
-				schema_info.schema = schema_name;
+				MongoSetSchemaName(schema_info, schema_name);
 				schema_info.on_conflict = OnCreateConflict::IGNORE_ON_CONFLICT;
 				auto system_transaction = CatalogTransaction::GetSystemTransaction(GetDatabase());
 				auto schema_entry = CreateSchema(system_transaction, schema_info);
@@ -401,11 +406,12 @@ PhysicalOperator &MongoCatalog::PlanUpdate(ClientContext &context, PhysicalPlanG
 
 void MongoCatalog::DropSchema(ClientContext &context, DropInfo &info) {
 	lock_guard<mutex> lock(schemas_lock);
-	auto it = schemas.find(info.name);
+	auto drop_name = MongoGetDropName(info);
+	auto it = schemas.find(drop_name);
 	if (it != schemas.end()) {
 		schemas.erase(it);
 	} else if (info.if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
-		throw CatalogException("Schema with name \"%s\" not found", info.name);
+		throw CatalogException("Schema with name \"%s\" not found", drop_name);
 	}
 }
 
@@ -437,8 +443,8 @@ void MongoCatalog::CacheViewInfo(const string &db_name, const string &collection
 	lock_guard<mutex> lock(view_info_cache_lock);
 	string cache_key = db_name + ":" + collection_name;
 	auto cached = make_shared_ptr<CreateViewInfo>();
-	cached->schema = info.schema;
-	cached->view_name = info.view_name;
+	MongoSetViewSchema(*cached, MongoGetViewSchema(info));
+	MongoSetViewName(*cached, MongoGetViewName(info));
 	cached->sql = info.sql;
 	cached->query = info.query ? unique_ptr_cast<SQLStatement, SelectStatement>(info.query->Copy()) : nullptr;
 	cached->types = info.types;

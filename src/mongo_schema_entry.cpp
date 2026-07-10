@@ -1,4 +1,5 @@
 #include "mongo_schema_entry.hpp"
+#include "mongo_compat.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
@@ -43,7 +44,11 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::LookupEntry(CatalogTransaction tran
 	}
 
 	if (default_generator && transaction.context) {
+#ifdef DUCKDB_MAIN_VECTOR_API
+		auto default_entry = default_generator->CreateDefaultEntry(*transaction.context, Identifier(entry_name));
+#else
 		auto default_entry = default_generator->CreateDefaultEntry(*transaction.context, entry_name);
+#endif
 		if (default_entry) {
 			auto view_entry = dynamic_cast<ViewCatalogEntry *>(default_entry.get());
 			if (view_entry) {
@@ -65,20 +70,19 @@ void MongoSchemaEntry::SetDefaultGenerator(unique_ptr<DefaultGenerator> generato
 optional_ptr<CatalogEntry> MongoSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
 	lock_guard<mutex> lock(entry_lock);
 
-	// Check if view already exists
-	auto it = views.find(info.view_name);
+	auto view_name = MongoGetViewName(info);
+	auto it = views.find(view_name);
 	if (it != views.end()) {
 		if (info.on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
-			throw CatalogException::EntryAlreadyExists(CatalogType::VIEW_ENTRY, info.view_name);
+			throw CatalogException("View with name \"%s\" already exists", view_name);
 		}
 		return it->second.get();
 	}
 
-	// Create new view entry
 	auto view_entry = make_uniq<ViewCatalogEntry>(catalog, *this, info);
 	auto result = view_entry.get();
 	auto shared_entry = shared_ptr<CatalogEntry>(view_entry.release());
-	views[info.view_name] = shared_entry;
+	views[view_name] = shared_entry;
 
 	return result;
 }
@@ -145,7 +149,15 @@ void MongoSchemaEntry::TryLoadEntries(ClientContext &context) {
 
 	vector<string> collection_names;
 	try {
-		collection_names = default_generator->GetDefaultEntries();
+		auto entries = default_generator->GetDefaultEntries();
+		collection_names.reserve(entries.size());
+		for (auto &e : entries) {
+#ifdef DUCKDB_MAIN_VECTOR_API
+			collection_names.push_back(e.GetIdentifierName());
+#else
+			collection_names.push_back(e);
+#endif
+		}
 	} catch (const std::exception &e) {
 		is_loaded = true;
 		return;
@@ -177,7 +189,11 @@ shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &c
 
 	if (default_generator) {
 		try {
+#ifdef DUCKDB_MAIN_VECTOR_API
+			auto default_entry = default_generator->CreateDefaultEntry(context, Identifier(collection_name));
+#else
 			auto default_entry = default_generator->CreateDefaultEntry(context, collection_name);
+#endif
 			if (default_entry) {
 				auto view_entry = dynamic_cast<ViewCatalogEntry *>(default_entry.get());
 				if (view_entry) {
@@ -263,11 +279,12 @@ void MongoSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEn
 void MongoSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
 	if (info.type == CatalogType::VIEW_ENTRY) {
 		lock_guard<mutex> lock(entry_lock);
-		auto it = views.find(info.name);
+		auto drop_name = MongoGetDropName(info);
+		auto it = views.find(drop_name);
 		if (it != views.end()) {
 			views.erase(it);
 		} else if (info.if_not_found == OnEntryNotFound::THROW_EXCEPTION) {
-			throw CatalogException("View with name \"%s\" not found", info.name);
+			throw CatalogException("View with name \"%s\" not found", drop_name);
 		}
 	} else {
 		throw NotImplementedException("DROP is only supported for views in MongoDB catalogs");

@@ -3,6 +3,7 @@
 #include "mongo_catalog.hpp"
 #include "mongo_transaction_manager.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
+#include "duckdb/main/attached_database.hpp"
 #include "duckdb/common/string_util.hpp"
 
 namespace duckdb {
