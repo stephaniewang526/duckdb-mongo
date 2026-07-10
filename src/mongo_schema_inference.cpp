@@ -119,7 +119,7 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 						continue;
 					}
 					for (idx_t i = 0; i < StructType::GetChildCount(child); i++) {
-						auto &name = StructType::GetChildName(child, i);
+						auto &name = MongoStructChildName(child, i);
 						if (merged.find(name) == merged.end()) {
 							merged[name] = StructType::GetChildType(child, i);
 						}
@@ -127,7 +127,7 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 				}
 				child_list_t<LogicalType> children;
 				for (auto &pair : merged) {
-					children.push_back({pair.first, pair.second});
+					MongoChildListAppend(children, pair.first, pair.second);
 				}
 				return LogicalType::LIST(LogicalType::STRUCT(children));
 			}
@@ -412,7 +412,7 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 	D_ASSERT(StructType::GetChildCount(child_type) == struct_children.size());
 
 	for (idx_t i = 0; i < struct_children.size(); i++) {
-		auto &name = StructType::GetChildName(child_type, i);
+		auto &name = MongoStructChildName(child_type, i);
 		auto &val = struct_children[i];
 		if (val.IsNull()) {
 			throw BinderException("mongo_scan \"columns\" parameter type specification cannot be NULL.");
@@ -432,7 +432,7 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 			// Look for "type" field
 			bool found_type = false;
 			for (idx_t j = 0; j < nested_children.size(); j++) {
-				auto &nested_name = StructType::GetChildName(nested_type, j);
+				auto &nested_name = MongoStructChildName(nested_type, j);
 				if (StringUtil::Lower(nested_name) == "type") {
 					auto &type_val = nested_children[j];
 					if (type_val.type().id() == LogicalTypeId::VARCHAR) {
@@ -449,7 +449,7 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 
 			// Look for "path" field (optional)
 			for (idx_t j = 0; j < nested_children.size(); j++) {
-				auto &nested_name = StructType::GetChildName(nested_type, j);
+				auto &nested_name = MongoStructChildName(nested_type, j);
 				if (StringUtil::Lower(nested_name) == "path") {
 					auto &path_val = nested_children[j];
 					if (path_val.type().id() == LogicalTypeId::VARCHAR) {

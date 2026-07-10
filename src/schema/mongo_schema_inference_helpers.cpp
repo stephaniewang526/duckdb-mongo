@@ -1,4 +1,5 @@
 #include "mongo_schema_inference_internal.hpp"
+#include "mongo_compat.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/types/date.hpp"
@@ -220,7 +221,7 @@ LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
 	child_list_t<LogicalType> struct_children;
 	for (const auto &pair : struct_fields) {
 		LogicalType resolved_type = ResolveTypeConflict(pair.second);
-		struct_children.push_back({pair.first, resolved_type});
+		MongoChildListAppend(struct_children, pair.first, resolved_type);
 	}
 
 	return LogicalType::STRUCT(struct_children);
@@ -312,7 +313,7 @@ Value BSONDocumentToStruct(const bsoncxx::document::view &doc, const LogicalType
 	vector<Value> struct_values;
 
 	for (const auto &child_type_pair : child_types) {
-		const std::string &field_name = child_type_pair.first;
+		const auto &field_name = MongoChildPairName(child_type_pair);
 		const LogicalType &field_type = child_type_pair.second;
 
 		auto field_element = doc[field_name];

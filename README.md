@@ -4,7 +4,7 @@ Integrates DuckDB with MongoDB, enabling direct SQL queries over MongoDB collect
 
 ## Announcement
 
-We currently support DuckDB `v1.5.3`. The extension is built against the DuckDB submodule in this repo, and that
+We currently support DuckDB `v1.5.4`. The extension is built against the DuckDB submodule in this repo, and that
 submodule is updated when new DuckDB releases are validated. See
 [How to Maintain an Extension Through DuckDB Releases](https://duckdb.org/community_extensions/development#how-to-maintain-an-extension-through-duckdb-releases)
 for the community extension policy.

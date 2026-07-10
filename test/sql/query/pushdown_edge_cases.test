@@ -23,7 +23,7 @@ SELECT COUNT(*) FROM mongo_test.users WHERE age > 100;
 query II
 EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE age > 100;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
 
 # ============================================================================
 # Empty collection - aggregates should work correctly
@@ -43,7 +43,7 @@ SELECT COUNT(*) FROM mongo_test.empty_collection;
 query II
 EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE active = true AND age > 25;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$count[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$count[\s\S]*
 
 # Correctness: active=true AND age>25: Alice(30), Charlie(35), Diana(28) = 3
 query I
@@ -55,7 +55,7 @@ SELECT COUNT(*) FROM mongo_test.users WHERE active = true AND age > 25;
 query II
 EXPLAIN SELECT active, SUM(balance) FROM mongo_test.users WHERE age >= 28 GROUP BY active;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$group[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$match[\s\S]*\$group[\s\S]*
 
 # Correctness: age >= 28: Alice(30), Charlie(35), Diana(28) - all active=true
 query IR
@@ -81,7 +81,7 @@ true	1
 query II
 EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 1;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$sort[\s\S]*\$limit[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$sort[\s\S]*\$limit[\s\S]*
 
 # Should return first _id
 query I
