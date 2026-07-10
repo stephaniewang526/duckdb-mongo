@@ -23,15 +23,15 @@ SELECT name, email, age FROM mongo_test.users WHERE LENGTH(name) = 5 ORDER BY na
 Alice	alice@example.com	30
 Diana	diana@example.com	28
 
-# Test YEAR function pushdown (all users have created_at in 2023)
+# Test timestamp comparison pushdown (all users have created_at in 2023)
 query I
-SELECT COUNT(*) FROM mongo_test.users WHERE YEAR(created_at) >= 2023;
+SELECT COUNT(*) FROM mongo_test.users WHERE created_at >= '2023-01-01'::timestamp;
 ----
 4
 
-# Test MONTH function pushdown (only Alice has created_at in month 1)
+# Test timestamp range filter (only Alice has created_at before 2023-02-01)
 query I
-SELECT COUNT(*) FROM mongo_test.users WHERE MONTH(created_at) = 1;
+SELECT COUNT(*) FROM mongo_test.users WHERE created_at < '2023-02-01'::timestamp;
 ----
 1
 

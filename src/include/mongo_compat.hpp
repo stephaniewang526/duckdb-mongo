@@ -305,7 +305,7 @@ inline string MongoGetSchemaName(const CreateSchemaInfo &info) {
 	return info.SchemaName().GetIdentifierName();
 }
 inline void MongoSetSchemaName(CreateSchemaInfo &info, const string &schema) {
-	info.SetName(Identifier(schema));
+	info.SetSchema(Identifier(schema));
 }
 inline string MongoGetDropName(const DropInfo &info) {
 	return info.GetQualifiedName().Name().GetIdentifierName();

@@ -18,7 +18,7 @@ ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE 
 query II
 EXPLAIN SELECT COUNT(DISTINCT active) FROM mongo_test.users;
 ----
-physical_plan	<REGEX>:[\s\S]*(UNGROUPED_AGGREGATE|HASH_GROUP_BY)[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(UNGROUPED_AGGREGATE|HASH_GROUP_BY|Ungrouped Aggregate|Hash Group By)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 # Correctness: 2 distinct values (true, false)
 query I
@@ -35,7 +35,7 @@ SELECT COUNT(DISTINCT active) FROM mongo_test.users;
 query II
 EXPLAIN SELECT name FROM mongo_test.users ORDER BY age LIMIT 2;
 ----
-physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(TOP_N|Top N)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 # Correctness: youngest 2 users (Bob=25, Diana=28)
 query I
@@ -48,7 +48,7 @@ Diana
 query II
 EXPLAIN SELECT name FROM mongo_test.users ORDER BY name LIMIT 2;
 ----
-physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(TOP_N|Top N)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 query I
 SELECT name FROM mongo_test.users ORDER BY name LIMIT 2;
@@ -64,7 +64,7 @@ Bob
 query II
 EXPLAIN SELECT _id FROM mongo_test.users ORDER BY _id LIMIT 2 OFFSET 1;
 ----
-physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(TOP_N|Top N)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 # ============================================================================
 # GROUP BY with expression (not direct column ref) - NOT pushed down
@@ -74,7 +74,7 @@ physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
 query II
 EXPLAIN SELECT age // 10 AS age_decade, COUNT(*) FROM mongo_test.users GROUP BY age // 10;
 ----
-physical_plan	<REGEX>:[\s\S]*HASH_GROUP_BY[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(HASH_GROUP_BY|Hash Group By)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 # Correctness check (using integer division //)
 # Ages: 25, 28, 30, 35 -> decades: 2, 2, 3, 3
@@ -92,7 +92,7 @@ SELECT age // 10 AS age_decade, COUNT(*) FROM mongo_test.users GROUP BY age // 1
 query II
 EXPLAIN SELECT COUNT(*) FILTER (WHERE age > 30) FROM mongo_test.users;
 ----
-physical_plan	<REGEX>:[\s\S]*UNGROUPED_AGGREGATE[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(UNGROUPED_AGGREGATE|Ungrouped Aggregate)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 # Correctness: only Charlie (35) has age > 30
 query I
@@ -108,7 +108,7 @@ SELECT COUNT(*) FILTER (WHERE age > 30) FROM mongo_test.users;
 query II
 EXPLAIN SELECT name FROM mongo_test.users ORDER BY active, _id LIMIT 2;
 ----
-physical_plan	<REGEX>:[\s\S]*TOP_N[\s\S]*MONGO_SCAN[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(TOP_N|Top N)[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*
 
 statement ok
 DETACH mongo_test;

@@ -19,13 +19,13 @@ ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE 
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*age.*
+physical_plan	<REGEX>:.*(MONGO_SCAN|Mongo Scan).*Filters:.*age.*
 
 # Simple filter with multiple conditions should be pushed down
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25 AND active = true;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*(age|active).*(age|active).*
+physical_plan	<REGEX>:.*(MONGO_SCAN|Mongo Scan).*Filters:.*(age|active).*(age|active).*
 
 # ============================================================================
 # Complex Filter Pushdown Tests - Verify complex filters are pushed down
@@ -37,14 +37,14 @@ physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*(age|active).*(age|active).*
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(name) > 5;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*Projections: name.*
+physical_plan	<REGEX>:.*(MONGO_SCAN|Mongo Scan).*Projections: name.*
 
 # Complex filter with column-to-column comparison should be pushed down
 # Expected: MONGO_SCAN appears directly (no FILTER operator above it)
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE age > balance;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*
+physical_plan	<REGEX>:.*(MONGO_SCAN|Mongo Scan).*
 
 # ============================================================================
 # Combined Simple + Complex Filter Pushdown Tests
@@ -54,7 +54,7 @@ physical_plan	<REGEX>:.*MONGO_SCAN.*
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE age > 25 AND LENGTH(name) > 5;
 ----
-physical_plan	<REGEX>:.*MONGO_SCAN.*Filters:.*
+physical_plan	<REGEX>:.*(MONGO_SCAN|Mongo Scan).*Filters:.*
 
 # ============================================================================
 # Filter Pruning Tests (Projection) - Verify filter columns are not fetched
@@ -88,7 +88,7 @@ physical_plan	<REGEX>:.*Projections:.*name.*
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE RANDOM() > 0.5;
 ----
-physical_plan	<REGEX>:.*FILTER.*MONGO_SCAN.*
+physical_plan	<REGEX>:.*(FILTER|Filter).*(MONGO_SCAN|Mongo Scan).*
 
 # ============================================================================
 # Verify Filters Are Actually Pushed Down (Functional Tests)

@@ -17,7 +17,7 @@ ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE 
 query II
 EXPLAIN SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
 
 query I
 SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
@@ -32,7 +32,7 @@ SELECT COUNT(*) FROM mongo_test.users WHERE active = true;
 query II
 EXPLAIN SELECT COUNT(*) FROM mongo_test.users;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$count[\s\S]*
 
 query I
 SELECT COUNT(*) FROM mongo_test.users;
@@ -48,7 +48,7 @@ SELECT COUNT(*) FROM mongo_test.users;
 query II
 EXPLAIN SELECT COUNT(name) FROM mongo_test.users;
 ----
-physical_plan	<REGEX>:[\s\S]*MONGO_SCAN[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*scan_method[\s\S]*aggregate[\s\S]*pipeline[\s\S]*\$group[\s\S]*
 
 query I
 SELECT COUNT(name) FROM mongo_test.users;
