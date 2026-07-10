@@ -125,10 +125,10 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 						}
 					}
 				}
-			child_list_t<LogicalType> children;
-			for (auto &pair : merged) {
-				MongoChildListAppend(children, pair.first, pair.second);
-			}
+				child_list_t<LogicalType> children;
+				for (auto &pair : merged) {
+					MongoChildListAppend(children, pair.first, pair.second);
+				}
 				return LogicalType::LIST(LogicalType::STRUCT(children));
 			}
 			return deepest_list_type;

@@ -48,18 +48,17 @@ static void ApplyBindingRulesToExpression(unique_ptr<Expression> &expr, const ve
 	if (!expr) {
 		return;
 	}
-	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(
-	    expr, [&](BoundColumnRefExpression &colref, unique_ptr<Expression> &child) {
-		    (void)child;
-		    auto &binding = MongoColumnBindingMutable(colref);
-		    for (const auto &rule : rules) {
-			    if (binding.table_index == rule.from_table_index) {
-				    binding.table_index = rule.to_table_index;
-				    binding.column_index =
-				        decltype(binding.column_index)(idx_t(binding.column_index) + rule.column_offset);
-			    }
-		    }
-	    });
+	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(expr, [&](BoundColumnRefExpression &colref,
+	                                                                               unique_ptr<Expression> &child) {
+		(void)child;
+		auto &binding = MongoColumnBindingMutable(colref);
+		for (const auto &rule : rules) {
+			if (binding.table_index == rule.from_table_index) {
+				binding.table_index = rule.to_table_index;
+				binding.column_index = decltype(binding.column_index)(idx_t(binding.column_index) + rule.column_offset);
+			}
+		}
+	});
 }
 
 static void ApplyBindingRulesToOperator(LogicalOperator &op, const vector<BindingMapRule> &rules);
