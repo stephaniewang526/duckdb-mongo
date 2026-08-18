@@ -1,0 +1,173 @@
+{
+  "_comment": [
+    "Drives the DuckDB extension's own sqllogictest suite. build overlays the",
+    "patched src onto the checkout ($DUT_CHECKOUT) and rebuilds unittest, which",
+    "statically links the extension; run resets the conformance collections,",
+    "invokes unittest on one .test file, and appends the {post} script's output",
+    "to the trace. Normal scenarios use conf_noop.js (prints nothing); the",
+    "ordered-failure scenario uses append_fail.js, which reads the durable prefix",
+    "back from MongoDB and emits a FlushBatchFail event. Three models pin the",
+    "three schemas the runs insert. See scripts/conformance/README.md for keys."
+  ],
+  "lang": "cpp",
+  "build": ["sh", "-c", "\"$DUT_CHECKOUT\"/.spectrum/edges/insert-cpp/overlay_build.sh {code}"],
+  "build_env": {},
+  "run_env": {
+    "SPECTRUM_TRACE": "{trace}",
+    "MONGO_INSERT_BATCH_SIZE": "{batch}"
+  },
+  "run": ["sh", "-c",
+          "cd \"$DUT_CHECKOUT\" && mongosh --quiet mongodb://localhost:27017 test/sql/insert/conf_reset.js >/dev/null && MONGODB_TEST_DATABASE_AVAILABLE=1 build/release/test/unittest \"{test}\" && mongosh --quiet mongodb://localhost:27017 \"{post}\" >> \"$SPECTRUM_TRACE\""],
+  "models": {
+    "flat": {},
+    "flatperrow": {},
+    "nested": {},
+    "typed": {},
+    "ctas": {},
+    "types": {},
+    "structured": {},
+    "fail": {}
+  },
+  "scenarios": [
+    {
+      "label": "flat-oneflush",
+      "model": "flat",
+      "vars": { "test": "test/sql/insert/insert_smoke.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "flat-perrow",
+      "model": "flatperrow",
+      "vars": { "test": "test/sql/insert/insert_smoke.test", "batch": "1", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "nested-one",
+      "model": "nested",
+      "vars": { "test": "test/sql/insert/conf_nested.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "typed-one",
+      "model": "typed",
+      "vars": { "test": "test/sql/insert/conf_typed.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "ctas",
+      "model": "ctas",
+      "vars": { "test": "test/sql/insert/conf_ctas.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "copy",
+      "model": "ctas",
+      "vars": { "test": "test/sql/insert/conf_copy.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "types",
+      "model": "types",
+      "vars": { "test": "test/sql/insert/conf_types.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "structured",
+      "model": "structured",
+      "vars": { "test": "test/sql/insert/conf_structured.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 2
+    },
+    {
+      "label": "fail-ordered",
+      "model": "fail",
+      "vars": { "test": "test/sql/insert/conf_fail.test", "batch": "1000", "post": "test/sql/insert/append_fail.js" },
+      "repeats": 1
+    }
+  ],
+  "controls": [
+    {
+      "label": "flat-bug",
+      "model": "flat",
+      "patches": ["instrument", "bug"],
+      "vars": { "test": "test/sql/insert/insert_smoke.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "flat-state-bug",
+      "model": "flat",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/insert_smoke.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "flatperrow-state-bug",
+      "model": "flatperrow",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/insert_smoke.test", "batch": "1", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "nested-bug",
+      "model": "nested",
+      "patches": ["instrument", "bug"],
+      "vars": { "test": "test/sql/insert/conf_nested.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "nested-state-bug",
+      "model": "nested",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/conf_nested.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "typed-bug",
+      "model": "typed",
+      "patches": ["instrument", "bug"],
+      "vars": { "test": "test/sql/insert/conf_typed.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "ctas-bug",
+      "model": "ctas",
+      "patches": ["instrument", "bug"],
+      "vars": { "test": "test/sql/insert/conf_ctas.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "copy-state-bug",
+      "model": "ctas",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/conf_copy.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "types-state-bug",
+      "model": "types",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/conf_types.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "structured-state-bug",
+      "model": "structured",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/conf_structured.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    },
+    {
+      "label": "fail-state-bug",
+      "model": "fail",
+      "patches": ["instrument", "state-bug"],
+      "vars": { "test": "test/sql/insert/conf_fail.test", "batch": "1000", "post": "test/sql/insert/append_fail.js" },
+      "repeats": 1
+    },
+    {
+      "label": "fail-swallow",
+      "model": "fail",
+      "patches": ["instrument", "swallow"],
+      "vars": { "test": "test/sql/insert/conf_fail.test", "batch": "1000", "post": "test/sql/insert/conf_noop.js" },
+      "repeats": 1
+    }
+  ]
+}

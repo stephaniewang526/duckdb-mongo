@@ -1,0 +1,11 @@
+--- a/src/mongo_insert.cpp
++++ b/src/mongo_insert.cpp
+@@ -66,7 +66,7 @@
+ 		    IsValidObjectIdHex(str_val)) {
+ 			return types::bson_value::value(bsoncxx::oid(str_val));
+ 		}
+-		return types::bson_value::value(str_val);
++		return types::bson_value::value(str_val + "_BUG");
+ 	}
+ 	case LogicalTypeId::BIGINT:
+ 		return types::bson_value::value(value.GetValue<int64_t>());

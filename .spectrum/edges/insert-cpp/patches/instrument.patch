@@ -1,0 +1,129 @@
+--- /dev/null
++++ b/src/conformance_trace.hpp
+@@ -0,0 +1,57 @@
++// ---- conformance tracing (applied only to a throwaway build) ----
++// Header-only: every seam file #includes it, so no translation unit
++// is added to any target and no link step changes. One writer behind
++// a function-local static mutex gives every thread's events one
++// replayable total order. The file is opened on the first emit, from
++// the path $SPECTRUM_TRACE holds, so nothing has to be called before the
++// code under test runs and a test suite drives it untouched.
++#pragma once
++#include <cstdlib>
++#include <fstream>
++#include <mutex>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++inline std::string conformance_quote(const std::string &s) {
++    std::string out = "\"";
++    for (char c : s) {
++        switch (c) {
++            case '"': out += "\\\""; break;
++            case '\\': out += "\\\\"; break;
++            case '\n': out += "\\n"; break;
++            case '\r': out += "\\r"; break;
++            case '\t': out += "\\t"; break;
++            default: out += c;
++        }
++    }
++    out += "\"";
++    return out;
++}
++
++inline std::string conformance_set(const std::vector<std::string> &xs) {
++    std::string out;
++    for (size_t i = 0; i < xs.size(); i++) {
++        if (i > 0) out += ",";
++        out += conformance_quote(xs[i]);
++    }
++    return out;
++}
++
++inline void conformance_emit(const std::string &event) {
++    static std::mutex conformance_mutex;
++    static std::ofstream conformance_out;
++    std::lock_guard<std::mutex> lock(conformance_mutex);
++    if (!conformance_out.is_open()) {
++        const char *path = std::getenv("SPECTRUM_TRACE");
++        if (path == nullptr) {
++            throw std::runtime_error(
++                "SPECTRUM_TRACE is unset: it names the file this run's trace "
++                "is written to, and the conformance runner sets it from "
++                "the manifest's `run_env`");
++        }
++        conformance_out.open(path);
++    }
++    conformance_out << event << "\n";
++    conformance_out.flush();
++}
+--- a/src/mongo_batch_sink.cpp
++++ b/src/mongo_batch_sink.cpp
+@@ -1,3 +1,4 @@
++#include "conformance_trace.hpp"
+ #include "mongo_batch_sink.hpp"
+ #include "mongo_instance.hpp"
+ #include "duckdb/common/numeric_utils.hpp"
+@@ -14,6 +15,7 @@
+ 
+ bool MongoBatchSink::Stage(bsoncxx::document::value doc) {
+ 	// spectrum: StageRow doc~=bsoncxx::to_json(doc.view(), bsoncxx::ExtendedJsonMode::k_canonical)
++	conformance_emit(std::string(R"({"action":"StageRow")") + R"(,"doc":)" + (bsoncxx::to_json(doc.view(), bsoncxx::ExtendedJsonMode::k_canonical)) + R"(})");
+ 	buffer.push_back(std::move(doc));
+ 	return buffer.size() >= batch_size;
+ }
+@@ -37,6 +39,7 @@
+ 	// the statement aborts with no count; the fail conformance scenario pins the durable set down.
+ 	collection.insert_many(buffer, mongocxx::options::insert {}.ordered(false));
+ 	// spectrum: FlushBatchOk
++	conformance_emit(std::string(R"({"action":"FlushBatchOk"})"));
+ 	buffer.clear();
+ }
+ 
+--- a/src/mongo_insert.cpp
++++ b/src/mongo_insert.cpp
+@@ -1,3 +1,4 @@
++#include "conformance_trace.hpp"
+ #include "mongo_insert.hpp"
+ #include "mongo_batch_sink.hpp"
+ #include "mongo_instance.hpp"
+@@ -335,6 +336,7 @@
+ unique_ptr<GlobalSinkState> MongoInsertOperator::GetGlobalSinkState(ClientContext &context) const {
+ 	GetMongoInstance();
+ 	// spectrum: Init
++	conformance_emit(std::string(R"({"action":"Init"})"));
+ 	return make_uniq<MongoInsertGlobalState>();
+ }
+ 
+@@ -374,6 +376,7 @@
+ 	gstate.insert_count += lstate.row_count;
+ 	// spectrum: Combine w=std::to_string(lstate.worker_id)
+ 	// spectrum-state: total%=gstate.insert_count
++	conformance_emit(std::string(R"({"action":"Combine")") + R"(,"w":)" + conformance_quote(std::to_string(lstate.worker_id)) + R"(,"state":{"total":)" + std::to_string(gstate.insert_count) + R"(})" + R"(})");
+ 	return SinkCombineResultType::FINISHED;
+ }
+ 
+@@ -392,6 +395,7 @@
+ 	chunk.SetCardinality(1);
+ 	chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.insert_count)));
+ 	// spectrum: Report total%=gstate.insert_count
++	conformance_emit(std::string(R"({"action":"Report")") + R"(,"total":)" + std::to_string(gstate.insert_count) + R"(})");
+ 	return SourceResultType::FINISHED;
+ }
+ 
+--- a/src/mongo_copy.cpp
++++ b/src/mongo_copy.cpp
+@@ -1,3 +1,4 @@
++#include "conformance_trace.hpp"
+ #include "mongo_copy.hpp"
+ #include "mongo_catalog.hpp"
+ #include "mongo_instance.hpp"
+@@ -127,6 +128,7 @@
+                                                          const string &file_path) {
+ 	GetMongoInstance();
+ 	// spectrum: Init
++	conformance_emit(std::string(R"({"action":"Init"})"));
+ 	return make_uniq<MongoCopyGlobalState>();
+ }
+ 

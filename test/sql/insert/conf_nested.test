@@ -1,0 +1,22 @@
+# Conformance scenario: flatten-reversal on write. The collection conf_nested is
+# pre-seeded with a nested document so schema inference produces the flattened
+# columns address_city and address_zip mapped back to address.city / address.zip.
+# The INSERT supplies no _id, so MongoDB generates one. The conformance edge
+# insert-cpp drives this file; the harness reset.js restores the schema-only
+# collection before each run.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+INSERT INTO m.duckdb_mongo_test.conf_nested (address_city, address_zip, tag)
+SELECT * FROM (VALUES ('NYC', 10001, 'x')) AS t(a, b, c);
+
+query TIT
+SELECT address_city, address_zip, tag FROM m.duckdb_mongo_test.conf_nested WHERE address_city = 'NYC';
+----
+NYC	10001	x

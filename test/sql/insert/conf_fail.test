@@ -1,0 +1,19 @@
+# Conformance scenario: an ordered insert_many that fails partway. conf_fail is
+# pre-seeded with {_id: 999}. The batch stages _id 1, 2, 999, 3 in one
+# insert_many; ordered, MongoDB inserts 1 and 2, then rejects 999 (duplicate key)
+# and the exception aborts the statement, leaving {1, 2} durable and reporting no
+# count. The conformance edge appends a FlushBatchFail event carrying the durable
+# prefix read back from MongoDB. conf_reset.js restores the seed before each run.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement error
+INSERT INTO m.duckdb_mongo_test.conf_fail
+SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (999, 'dup'), (3, 'c')) AS t(_id, name);
+----
+E11000

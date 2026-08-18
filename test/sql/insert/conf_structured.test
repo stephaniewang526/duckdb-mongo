@@ -1,0 +1,16 @@
+# Conformance scenario: the nested encodings the serializer now builds instead of
+# stringifying -- a LIST of INTEGER as a BSON array of int32, a STRUCT as a
+# subdocument, and a BLOB as {"$binary": {"base64": ..., "subType": "00"}}. CTAS
+# into a new collection takes the column types from the SELECT. conf_reset.js
+# drops conf_structured before each run.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+CREATE TABLE m.duckdb_mongo_test.conf_structured AS SELECT
+  [1, 2, 3] AS arr, {'a': 1, 'b': 'x'} AS obj, '\xDE\xAD'::BLOB AS bin, 'plain' AS name;

@@ -1,0 +1,662 @@
+{
+  "seed": {
+    "input": "https://github.com/stephaniewang526/duckdb-mongo/discussions/47",
+    "node": "mongo-insert"
+  },
+  "nodes": [
+    {
+      "id": "insert-outcome",
+      "layer": "L0",
+      "module": "InsertOutcome.tla",
+      "harness": "MCInsertOutcome.tla",
+      "models": {
+        "canonical": "MCInsertOutcome.cfg"
+      },
+      "runs": [
+        {
+          "model": "canonical",
+          "started": "2026-08-17T20:53:02+00:00",
+          "finished": "2026-08-17T20:53:02+00:00",
+          "seconds": 0.2,
+          "inputs": {
+            "harness": "sha256:1effc8272c116bf7fad51b3c2cdb34902465b645cc247a72731c492c48c63240",
+            "module": "sha256:d593dbee3832381e76efb19a7d4a62bfdeb0a303e63441b79094d02b8559cbdd",
+            "config": "sha256:101bce7f0cfed755d8d6596e280801f0fcae029e6ac1e86a25f2432a9d6e944e"
+          },
+          "result": "verified",
+          "states": 9
+        }
+      ]
+    },
+    {
+      "id": "mongo-insert",
+      "layer": "L2",
+      "module": "MongoInsert.tla",
+      "harness": "MCMongoInsert.tla",
+      "models": {
+        "canonical": "MCMongoInsert.cfg"
+      },
+      "runs": [
+        {
+          "model": "canonical",
+          "started": "2026-08-18T16:42:52+00:00",
+          "finished": "2026-08-18T16:42:53+00:00",
+          "seconds": 0.4,
+          "inputs": {
+            "harness": "sha256:d11dc253905a597ff53e064c0ee5f89a83207caac2983dde3ef41aec41f5e468",
+            "module": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "config": "sha256:57a3a0f78ffab5c15e4fa10e042b9f175dbb119610504bf74c1c41f79b6808d2"
+          },
+          "result": "verified",
+          "states": 237
+        }
+      ]
+    },
+    {
+      "id": "cpp",
+      "layer": "L3",
+      "source": [
+        "../../../src/"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "outcome-mongo",
+      "from": "insert-outcome",
+      "to": "mongo-insert",
+      "kind": "refinement",
+      "harness": "MongoRefinesOutcome.tla",
+      "models": {
+        "canonical": "MongoRefinesOutcome.cfg"
+      },
+      "runs": [
+        {
+          "model": "canonical",
+          "started": "2026-08-18T16:42:53+00:00",
+          "finished": "2026-08-18T16:42:53+00:00",
+          "seconds": 0.3,
+          "inputs": {
+            "harness": "sha256:5e1e447d892edd050bbe9ade912abc592fdcc008c1b5be9d6ee179fc8f694fa6",
+            "config": "sha256:8e3a18bc2385618041343dfb50ea7db201982ecd2a69cabd2ce1f03863e3aee5",
+            "from": "sha256:d593dbee3832381e76efb19a7d4a62bfdeb0a303e63441b79094d02b8559cbdd",
+            "to": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9"
+          },
+          "result": "verified",
+          "states": 237
+        }
+      ]
+    },
+    {
+      "id": "insert-cpp",
+      "from": "mongo-insert",
+      "to": "cpp",
+      "kind": "conformance",
+      "harness": "Replay.tla",
+      "record": "Trace.tla",
+      "scenarios": "scenarios.json",
+      "patches": "patches/",
+      "instrument": [
+        "../../../src/mongo_batch_sink.cpp",
+        "../../../src/mongo_insert.cpp",
+        "../../../src/mongo_copy.cpp"
+      ],
+      "models": {
+        "flat": "Replay.flat.cfg",
+        "flatperrow": "Replay.flatperrow.cfg",
+        "nested": "Replay.nested.cfg",
+        "typed": "Replay.typed.cfg",
+        "ctas": "Replay.ctas.cfg",
+        "types": "Replay.types.cfg",
+        "structured": "Replay.structured.cfg",
+        "fail": "Replay.fail.cfg"
+      },
+      "runs": [
+        {
+          "model": "flat",
+          "started": "2026-08-18T16:42:53+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 41.4,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:5e90da292c0a2f02a62910e6bf93e53277f9fd270a05d16be029df890da43310",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 2,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 2,
+            "runs": 2,
+            "traces": 2,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "nested",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:29fe5f1c236ce512705aa6c5a9e78d84c9f6964a3176a6f088b770a9db025ba0",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 2,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 2,
+            "runs": 2,
+            "traces": 2,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "flatperrow",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:fb47a1f4582c32e89a1acc2e3b5394a368f0c2b4150e9f27f6088a1b7bf5a031",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 2,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 1,
+            "runs": 1,
+            "traces": 1,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "typed",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:eb0e41c1ed1e74d8510aac49cf2cd0f1b46f95264b091548e3c5d691eab8f112",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 2,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 1,
+            "runs": 1,
+            "traces": 1,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "fail",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:a7d74d3e0bd16e7d094fd87a88e42d81bc49961060396e5bb9330ce54a8093b0",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 1,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 2,
+            "runs": 2,
+            "traces": 2,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "ctas",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:a7f5bd3b056c9c8a3572558d94398f7e71a6af6506b8b383a78b87a2b8b9b32b",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 2,
+            "runs": 4,
+            "traces": 2,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 2,
+            "runs": 2,
+            "traces": 2,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "types",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:f1bc899efa6b2dd19d4bb0bf64b5a16aea07b4f57e6e0603f7d756ba26f55fc1",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 2,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 1,
+            "runs": 1,
+            "traces": 1,
+            "result": "diverge"
+          }
+        },
+        {
+          "model": "structured",
+          "started": "2026-08-18T16:43:35+00:00",
+          "finished": "2026-08-18T16:43:35+00:00",
+          "seconds": 0.0,
+          "inputs": {
+            "harness": "sha256:19f416c00155fbab5e8acaeca3b5a88b9dab8eab203f8b4cefdcfca42c4f1fad",
+            "config": "sha256:2764e6375ebd266c312e3860637d0604d73279d8e6d8a86e9636a513261b398e",
+            "from": "sha256:c991966c0febec921d2aee281ca651e9559e4258f6e37b8e65105f72c253a6f9",
+            "scenarios": "sha256:8467464aeff47b37065938de397bb0b2a4126859fbc7d4706806d0ad014de177",
+            "patches": {
+              "patches/bug.patch": "sha256:a9a56dd8d6b171c1827f05fe822cdda7982866c7b39053320f60af6ba275ebae",
+              "patches/instrument.patch": "sha256:c53228e426a1c99aa2f639ea7c2f3f667d97a99d1f0eb0b4d93a3d5401c069c9",
+              "patches/state-bug.patch": "sha256:e08ae8d072199c6bb600f7c64eabf7096bb7f681427a4da3a86d6c52cd310a06",
+              "patches/swallow.patch": "sha256:e4609ce29350c45cbca79950eb910f231f63199a32eb208d56c35c74c076a353"
+            },
+            "source": {
+              "../src/mongo_batch_sink.cpp": "sha256:0158f5345f1c776ef7d26b897129477b69b98d809ef0e1caee92b96187efb906",
+              "../src/mongo_catalog.cpp": "sha256:cbfcdf4399f59a07f0f14a777f7d9617cc116b458071db737cff49f2ff683be2",
+              "../src/mongo_clear_cache.cpp": "sha256:e0973624279e97fdefa276d7ca7f0390d5d72cf921e2d671dcba0abdb21b6241",
+              "../src/mongo_copy.cpp": "sha256:d210988c1175591339ed07cd6cf33e48ad2d9421cf562a32bfa3f4aff5335c4a",
+              "../src/mongo_expr_pushdown.cpp": "sha256:b885fcb114e5174189f3c83fb9958f0f3c1f3c0f271e235b734b8c4578e5ab93",
+              "../src/mongo_extension.cpp": "sha256:8127804ccb915e26c4c3648cc25a08a1f44931bdff8820ca5067e398d450c308",
+              "../src/mongo_filter_pushdown.cpp": "sha256:e5aa83a96254fae7d1ac48aa1a7ecbf005fc19894aa3907a0a80536879603913",
+              "../src/mongo_insert.cpp": "sha256:8d9b03a78e93ea9cdbcb4407136c8ab6465b4a1372af5537f874db1a1c448d0c",
+              "../src/mongo_instance.cpp": "sha256:74bf484b864064a859b4fce30d6feb31142ce1d7a57523fcb47cc1a074ab9ee6",
+              "../src/mongo_optimizer.cpp": "sha256:b040a744ce14c180f9c2eb2f0374d5621615aca2f0d5a2d83c06b63ca74c3623",
+              "../src/mongo_schema_entry.cpp": "sha256:651b42a1d3093cb4000b675f21451b5a113000454b31c6623fea08234c80c36b",
+              "../src/mongo_schema_inference.cpp": "sha256:6e5b46e1f5fd00f59d77fc7319ad139adc60ee82a53c02c40256eb1189dd5850",
+              "../src/mongo_secrets.cpp": "sha256:45fa6dc4300c6a8d2e6e0bdcb37b3c2fb3ef2a213dfee88cb5e636909c1d7b6d",
+              "../src/mongo_storage_extension.cpp": "sha256:88e8aea7c709ecf9335d5fc6a6cc6f794b481d750463e67c99a973195aca5721",
+              "../src/mongo_table_function.cpp": "sha256:991b1d1e2aed9d536155fea9bccf0c748dbed995e388bf06b206593072e7cc8c",
+              "../src/mongo_transaction.cpp": "sha256:6441d3d4fc8e4f21c2e7d7495fb36ab738bdcd4b881ed6f9eaa677d73e8be9e0",
+              "../src/mongo_transaction_manager.cpp": "sha256:a80abce31a35c52cf52299d384fd2e8044b96af9bafb27cb3724d8a4a06a8051",
+              "../src/include/mongo_batch_sink.hpp": "sha256:51408b7333908326bb71176a05f89fe073c8883b607f201f9a5f9c7811a5f560",
+              "../src/include/mongo_catalog.hpp": "sha256:5f5aed1ef0a2a1376ff8fea3bc0c8e1b2e17748e778b5e9d31338949a312e561",
+              "../src/include/mongo_compat.hpp": "sha256:c8a0f96190a67a32f73c9154762dc72b6d751cf9076577fd96dd6d6813c73416",
+              "../src/include/mongo_copy.hpp": "sha256:430b4ff535459a30209bde3d322fe8b10eb1dcab7da03efafbe01bbe9a18af2a",
+              "../src/include/mongo_expr_pushdown.hpp": "sha256:70b67021605a759ec419a39756fd67546e5a0029346343b9e1044210f9de9ad6",
+              "../src/include/mongo_extension.hpp": "sha256:021e86cbcc2f75457dd878a2312921b488ef980661b8103ae66116153ca0a758",
+              "../src/include/mongo_filter_pushdown.hpp": "sha256:d2ec7ac8ec7635bd84db57b238265f4c821f5cc55d7b077301b00586fe5502aa",
+              "../src/include/mongo_insert.hpp": "sha256:9582b370e57952a95981e4f50363fb1bd8eb6a1bc634b00ca1a2bbee14e7ce77",
+              "../src/include/mongo_instance.hpp": "sha256:bf9119b8c5201b144e0dd1e1cbf1f18595c2be893ceeac413f20e8b4b6481cfe",
+              "../src/include/mongo_optimizer.hpp": "sha256:1a25f9aac7eb41e9992fee4586f741c6a1d07a9aa0a0cb70e2a508440f44c488",
+              "../src/include/mongo_schema_entry.hpp": "sha256:3d29abb71e3ab16c47e017d197540f8f437993c9713320c26eded5ab53f08e86",
+              "../src/include/mongo_secrets.hpp": "sha256:5cb62b13086d5c6cd370f68f8186f87029031ce13f76f007054f8dbefd79852b",
+              "../src/include/mongo_storage_extension.hpp": "sha256:a88fe99f882f3a3f3b17e0793af406f6b58a1eb966325ec4f1d1262dab2f4faa",
+              "../src/include/mongo_table_function.hpp": "sha256:587037f0791b58b2d66aaacc682428c9e16b465533fdbabafa198d9e55be0e13",
+              "../src/include/mongo_transaction.hpp": "sha256:367c5ceaf6aae8dcd06ac7eea529a1012b8b5c17a858f89a0fd0f2e2028172b6",
+              "../src/include/mongo_transaction_manager.hpp": "sha256:6e58af728ab918339e67c61f07665e275f9efe38bd4ff09f579a1ce44a87d499",
+              "../src/schema/mongo_schema_inference_helpers.cpp": "sha256:ed86f7ff51187e120514f3b4f32260fa4e2358a4682bb9af9ef231491a71c538",
+              "../src/schema/mongo_schema_inference_internal.hpp": "sha256:5035f6353eb8ab945884a76ae4df78d112214d9349d49d1454e46a4d2caad12d"
+            }
+          },
+          "result": "verified",
+          "suite": {
+            "scenarios": 1,
+            "runs": 2,
+            "traces": 1,
+            "result": "conform"
+          },
+          "controls": {
+            "scenarios": 1,
+            "runs": 1,
+            "traces": 1,
+            "result": "diverge"
+          }
+        }
+      ]
+    }
+  ]
+}

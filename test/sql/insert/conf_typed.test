@@ -1,0 +1,21 @@
+# Conformance scenario: the ObjectId and int32 encodings. conf_typed is seeded so
+# schema inference types _id as an ObjectId column, n as INTEGER, label as
+# VARCHAR. The INSERT supplies a 24-hex _id (written as {"$oid": ...}), an integer
+# (written as {"$numberInt": ...}), and a string. conf_reset.js restores the seed
+# before each run.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+INSERT INTO m.duckdb_mongo_test.conf_typed (_id, n, label)
+SELECT * FROM (VALUES ('0123456789abcdef01234567', 42, 'z')) AS t(a, b, c);
+
+query TIT
+SELECT _id, n, label FROM m.duckdb_mongo_test.conf_typed WHERE label = 'z';
+----
+0123456789abcdef01234567	42	z

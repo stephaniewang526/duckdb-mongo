@@ -1,0 +1,23 @@
+# Conformance scenario: COPY ... TO (FORMAT mongo). COPY is a separate DuckDB
+# CopyFunction, but it delegates staging and flushing to the same MongoBatchSink
+# the INSERT operator uses, so it emits the same core trace (Init, StageRow,
+# FlushBatchOk) with no Combine/Report -- COPY leaves the row count to DuckDB.
+# Columns and types come from the SELECT (an integer literal is int32), like CTAS.
+# conf_reset.js drops copy_out before each run.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'ann'), (2, 'bo')) AS t(id, name))
+TO 'm.duckdb_mongo_test.copy_out' (FORMAT mongo);
+
+query IT
+SELECT id, name FROM m.duckdb_mongo_test.copy_out ORDER BY id;
+----
+1	ann
+2	bo

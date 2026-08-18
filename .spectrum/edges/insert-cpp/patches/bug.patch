@@ -1,0 +1,11 @@
+--- a/src/mongo_insert.cpp
++++ b/src/mongo_insert.cpp
+@@ -368,7 +368,7 @@
+ 	auto &lstate = input.local_state.Cast<MongoInsertLocalState>();
+ 
+ 	auto collection = lstate.client[database_name][collection_name];
+-	FlushBatch(lstate, collection);
++	// bug control: skip the final flush, so the worker combines with a non-empty buffer.
+ 
+ 	lock_guard<mutex> guard(gstate.lock);
+ 	gstate.insert_count += lstate.row_count;

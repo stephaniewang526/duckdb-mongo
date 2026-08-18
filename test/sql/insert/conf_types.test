@@ -1,0 +1,17 @@
+# Conformance scenario: the scalar type encodings not covered elsewhere -- a
+# double, a boolean, a DATE and a TIMESTAMP (both an extended-JSON $date), beside
+# a string. CTAS into a new collection takes the column types from the SELECT.
+# LIST/STRUCT/BLOB have their own scenario, conf_structured.test. conf_reset.js
+# drops conf_types before each run.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+CREATE TABLE m.duckdb_mongo_test.conf_types AS SELECT
+  1.5::DOUBLE AS dbl, TRUE AS flag, DATE '2021-06-07' AS d,
+  TIMESTAMP '2021-06-07 08:09:10' AS ts, 'plain' AS name;

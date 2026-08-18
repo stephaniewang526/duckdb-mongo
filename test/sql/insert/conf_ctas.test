@@ -1,0 +1,22 @@
+# Conformance scenario: CREATE TABLE AS. Unlike INSERT, CTAS targets a new
+# collection, so there is no inferred schema: columns map to top-level fields with
+# no flatten reversal, and their types come from the SELECT (an integer literal is
+# INTEGER, serialized as int32). conf_reset.js drops ctas_out before each run so
+# the CREATE always makes the collection fresh.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+CREATE TABLE m.duckdb_mongo_test.ctas_out AS
+SELECT * FROM (VALUES (1, 'ann'), (2, 'bo')) AS t(id, name);
+
+query IT
+SELECT id, name FROM m.duckdb_mongo_test.ctas_out ORDER BY id;
+----
+1	ann
+2	bo
