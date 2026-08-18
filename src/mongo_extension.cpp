@@ -7,6 +7,7 @@
 #include "mongo_expr_pushdown.hpp"
 #include "mongo_optimizer.hpp"
 #include "mongo_secrets.hpp"
+#include "mongo_copy.hpp"
 #include "mongo_compat.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
@@ -33,27 +34,8 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 InsertionOrderPreservingMap<string> MongoScanToString(TableFunctionToStringInput &input);
 
 static void LoadInternal(ExtensionLoader &loader) {
-	// Register MongoDB table function
-	TableFunction mongo_scan("mongo_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
-	                         MongoScanFunction, MongoScanBind, nullptr, MongoScanInitLocal);
-
-	// Add optional parameters
-	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
-	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
-	mongo_scan.named_parameters["columns"] = LogicalType::ANY;
-	mongo_scan.named_parameters["pipeline"] = LogicalType::VARCHAR;
-	mongo_scan.named_parameters["schema_mode"] = LogicalType::VARCHAR;
-
-	// Enable filter pushdown
-	mongo_scan.filter_pushdown = true;
-	// Enable projection pushdown
-	mongo_scan.projection_pushdown = true;
-	// Enable filter pruning: filter columns that aren't used elsewhere don't need to be fetched
-	mongo_scan.filter_prune = true;
-	// Enable complex filter pushdown
-	mongo_scan.pushdown_complex_filter = MongoPushdownComplexFilter;
-	// EXPLAIN visibility
-	mongo_scan.to_string = MongoScanToString;
+	// Register MongoDB table function (shared factory keeps the scan config identical to the catalog table entry)
+	TableFunction mongo_scan = GetMongoScanTableFunction();
 
 	// Create TableFunctionInfo with description and comment
 	TableFunctionSet mongo_scan_set("mongo_scan");
@@ -109,6 +91,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	CreateSecretFunction mongo_secret_function = {"mongo", "config", CreateMongoSecretFunction};
 	SetMongoSecretParameters(mongo_secret_function);
 	loader.RegisterFunction(mongo_secret_function);
+
+	// Register the `mongo` COPY function: COPY (SELECT ...) TO 'alias.db.collection' (FORMAT mongo) bulk-exports rows
+	// into a MongoDB collection through the attached catalog's connection.
+	loader.RegisterFunction(GetMongoCopyFunction());
 
 	// Register MongoDB storage extension for ATTACH support
 	auto &db = loader.GetDatabaseInstance();

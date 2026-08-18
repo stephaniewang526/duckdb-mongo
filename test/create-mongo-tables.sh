@@ -515,6 +515,12 @@ db.case_variant_fields_test.insertMany([
   }
 ]);
 
+// Write-path targets. copy_target is seeded with a schema-only row so COPY ... FROM
+// binds against an inferred (_id, name) schema, mirroring conformance_smoke's use by
+// insert_smoke. The CREATE TABLE AS tests write brand-new collections, which
+// dropDatabase() above guarantees are absent on a fresh seed.
+db.copy_target.insertOne({ _id: 0, name: 'schema' });
+
 print('Test database created successfully!');
 print('Database: ' + db.getName());
 print('Collections: ' + db.getCollectionNames().join(', '));

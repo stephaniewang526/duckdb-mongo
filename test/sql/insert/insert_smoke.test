@@ -1,0 +1,24 @@
+# INSERT smoke test for the MongoDB extension.
+#
+# Precondition: the collection duckdb_mongo_test.conformance_smoke must already
+# exist with a two-field schema (_id, name), because INSERT binds against the
+# collection's inferred schema and an empty collection infers only _id. The test
+# harness seeds one schema row {_id: 0, name: "schema"} before running; the
+# SELECT below filters it out (WHERE _id > 0) so the assertion shows exactly the
+# inserted rows.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+INSERT INTO m.duckdb_mongo_test.conformance_smoke SELECT * FROM (VALUES (1,'ann'),(2,'bo')) AS t(_id,name);
+
+query II
+SELECT _id, name FROM m.duckdb_mongo_test.conformance_smoke WHERE _id > 0 ORDER BY _id;
+----
+1	ann
+2	bo

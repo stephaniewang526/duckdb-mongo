@@ -1,0 +1,60 @@
+# COPY ... TO bulk-export test for the MongoDB extension.
+#
+# COPY (SELECT ...) TO '<target>' (FORMAT mongo) writes the query's rows into a
+# MongoDB collection. The target names an attached MongoDB catalog and reuses its
+# connection: 'alias.database.collection', or 'alias.collection' using the
+# database the catalog was attached with. Rows flow through the same
+# DuckDB-value->BSON serializer and batched insert_many path as INSERT.
+# dropDatabase() in the seed harness guarantees the target collections are absent
+# on a fresh seed, so each COPY creates its collection.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+# Three-part target: alias.database.collection.
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'a'), (2, 'b'), (3, 'c')) AS t(_id, name))
+TO 'm.duckdb_mongo_test.copy_to_test' (FORMAT mongo);
+
+query IT
+SELECT _id, name FROM m.duckdb_mongo_test.copy_to_test ORDER BY _id;
+----
+1	a
+2	b
+3	c
+
+# Two-part target: the database defaults to the one the catalog was attached with.
+statement ok
+COPY (SELECT * FROM (VALUES (42, 'z')) AS t(_id, name))
+TO 'm.copy_to_test2' (FORMAT mongo);
+
+query IT
+SELECT _id, name FROM m.duckdb_mongo_test.copy_to_test2 ORDER BY _id;
+----
+42	z
+
+# An empty result set still creates the collection (create_collection runs at bind).
+statement ok
+COPY (SELECT * FROM (VALUES (1, 'x')) AS t(_id, name) WHERE 1 = 0)
+TO 'm.duckdb_mongo_test.copy_to_empty' (FORMAT mongo);
+
+query I
+SELECT count(*) FROM m.duckdb_mongo_test.copy_to_empty;
+----
+0
+
+# A target whose leading alias is not an attached database is rejected at bind.
+statement error
+COPY (SELECT 1 AS _id) TO 'no_such_alias.db.coll' (FORMAT mongo);
+----
+no attached database named "no_such_alias"
+
+# A malformed target (too few dotted segments) is rejected at bind.
+statement error
+COPY (SELECT 1 AS _id) TO 'single_segment' (FORMAT mongo);
+----
+expects a target of the form

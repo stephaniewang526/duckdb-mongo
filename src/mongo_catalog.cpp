@@ -1,8 +1,12 @@
 #include "mongo_catalog.hpp"
 #include "mongo_compat.hpp"
 #include "mongo_instance.hpp"
+#include "mongo_insert.hpp"
+#include "mongo_batch_sink.hpp"
 #include "mongo_schema_entry.hpp"
 #include "mongo_secrets.hpp"
+#include "duckdb/execution/physical_plan_generator.hpp"
+#include "duckdb/planner/operator/logical_insert.hpp"
 #include "duckdb/catalog/catalog_entry/schema_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
@@ -279,6 +283,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 			auto default_generator =
 			    make_uniq<MongoCollectionGenerator>(*this, schema, connection_string, database_name, this);
 			schema.SetDefaultGenerator(std::move(default_generator));
+			schema.SetConnectionInfo(connection_string, database_name);
 			callback(schema);
 		}
 		if (default_schema.empty()) {
@@ -297,6 +302,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 		auto &main_schema = main_schema_entry->Cast<MongoSchemaEntry>();
 		auto default_generator = make_uniq<MongoCollectionGenerator>(*this, main_schema, connection_string, "", this);
 		main_schema.SetDefaultGenerator(std::move(default_generator));
+		main_schema.SetConnectionInfo(connection_string, "");
 		callback(main_schema);
 	}
 
@@ -314,6 +320,7 @@ void MongoCatalog::ScanSchemas(ClientContext &context, std::function<void(Schema
 			auto default_generator =
 			    make_uniq<MongoCollectionGenerator>(*this, schema, connection_string, schema_name, this);
 			schema.SetDefaultGenerator(std::move(default_generator));
+			schema.SetConnectionInfo(connection_string, schema_name);
 			callback(schema);
 		}
 	}
@@ -373,6 +380,7 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 					auto default_generator =
 					    make_uniq<MongoCollectionGenerator>(*this, schema_ref, connection_string, schema_name, this);
 					schema_ref.SetDefaultGenerator(std::move(default_generator));
+					schema_ref.SetConnectionInfo(connection_string, schema_name);
 					schema = &schema_ref;
 				}
 			} catch (const std::exception &e) {
@@ -390,12 +398,52 @@ optional_ptr<SchemaCatalogEntry> MongoCatalog::LookupSchema(CatalogTransaction t
 
 PhysicalOperator &MongoCatalog::PlanCreateTableAs(ClientContext &context, PhysicalPlanGenerator &planner,
                                                   LogicalCreateTable &op, PhysicalOperator &plan) {
-	throw NotImplementedException("CREATE TABLE AS is not supported for MongoDB catalogs");
+	auto &create_info = op.info->Base();
+	// The MongoDB database is the target schema name; the collection is the new table name.
+	const string &db_name = create_info.schema.empty() ? database_name : create_info.schema;
+	const string &collection_name = create_info.table;
+
+	// A new collection has no inferred schema, so columns map straight to top-level fields (no flatten reversal) and no
+	// column is known to be an ObjectId. The SELECT's output columns give the field names and types in order.
+	auto column_names = create_info.columns.GetColumnNames();
+	auto column_types = create_info.columns.GetColumnTypes();
+
+	// A new collection would otherwise appear only on the first insert, so an empty result set would leave nothing
+	// behind. Create it up front so CREATE TABLE AS always produces the collection.
+	MongoBatchSink::EnsureCollection(connection_string, db_name, collection_name);
+
+	auto &insert = planner.Make<MongoInsertOperator>(op.types, connection_string, db_name, collection_name,
+	                                                 std::move(column_names), std::move(column_types),
+	                                                 unordered_map<string, string> {}, unordered_set<string> {},
+	                                                 op.estimated_cardinality);
+	insert.children.push_back(plan);
+	return insert;
 }
 
 PhysicalOperator &MongoCatalog::PlanInsert(ClientContext &context, PhysicalPlanGenerator &planner, LogicalInsert &op,
                                            optional_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("INSERT is not supported for MongoDB catalogs");
+	if (!plan) {
+		throw NotImplementedException("INSERT INTO ... DEFAULT VALUES is not supported for MongoDB catalogs");
+	}
+	if (op.on_conflict_info.action_type != OnConflictAction::THROW) {
+		throw NotImplementedException("INSERT ... ON CONFLICT is not supported for MongoDB catalogs");
+	}
+	if (op.return_chunk) {
+		throw NotImplementedException("INSERT ... RETURNING is not supported for MongoDB catalogs");
+	}
+
+	// Project defaults so the child chunk carries all table columns in logical order.
+	if (!op.column_index_map.empty()) {
+		plan = planner.ResolveDefaultsProjection(op, *plan);
+	}
+
+	auto &mongo_table = op.table.Cast<MongoTableEntry>();
+	auto &sd = *mongo_table.scan_data;
+	auto &insert = planner.Make<MongoInsertOperator>(op.types, connection_string, sd.database_name, sd.collection_name,
+	                                                 sd.column_names, sd.column_types, sd.column_name_to_mongo_path,
+	                                                 sd.objectid_columns, op.estimated_cardinality);
+	insert.children.push_back(*plan);
+	return insert;
 }
 
 PhysicalOperator &MongoCatalog::PlanDelete(ClientContext &context, PhysicalPlanGenerator &planner, LogicalDelete &op,

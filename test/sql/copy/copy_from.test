@@ -1,0 +1,28 @@
+# COPY ... FROM bulk-load test for the MongoDB extension.
+#
+# COPY <collection> FROM <file> binds to a LogicalInsert against the target
+# collection, so it flows through the same MongoInsertOperator / insert_many path
+# as INSERT. copy_target is seeded with a schema-only row {_id: 0, name: 'schema'}
+# so the (_id, name) schema is inferable; the reads below filter that row out with
+# _id >= 100. A CSV is materialized from DuckDB first, then bulk-loaded back into
+# MongoDB.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+COPY (SELECT * FROM (VALUES (100, 'cf1'), (101, 'cf2')) AS t(_id, name))
+TO '__TEST_DIR__/copy_from.csv' (HEADER);
+
+statement ok
+COPY m.duckdb_mongo_test.copy_target FROM '__TEST_DIR__/copy_from.csv' (HEADER);
+
+query IT
+SELECT _id, name FROM m.duckdb_mongo_test.copy_target WHERE _id >= 100 ORDER BY _id;
+----
+100	cf1
+101	cf2

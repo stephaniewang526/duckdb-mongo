@@ -1,6 +1,7 @@
 #include "mongo_table_function.hpp"
 #include "mongo_instance.hpp"
 #include "mongo_filter_pushdown.hpp"
+#include "mongo_expr_pushdown.hpp"
 #include "mongo_compat.hpp"
 #include "mongo_secrets.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -121,23 +122,9 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 		result->schema_mode = ParseSchemaMode(input.named_parameters["schema_mode"].GetValue<string>());
 	}
 
-	// Ensure MongoDB instance is initialized
-	GetMongoInstance();
-
-	// Create connection
-	result->connection = make_shared_ptr<MongoConnection>(result->connection_string);
-
-	// Get collection
-	auto db = result->connection->client[result->database_name];
-	auto collection = db[result->collection_name];
-
-	// Schema resolution priority:
-	// 1. User-provided columns parameter (highest priority)
-	// 2. __schema document in collection (for Atlas SQL customers)
-	// 3. Infer from documents (fallback)
+	// The user-provided columns parameter takes priority over __schema and inference. Connection setup and the
+	// remaining schema resolution are shared with the catalog table entry via MongoBindSchema.
 	bool schema_set = false;
-
-	// Check for user-provided columns parameter
 	if (input.named_parameters.find("columns") != input.named_parameters.end()) {
 		ParseSchemaFromColumnsParameter(context, input.named_parameters["columns"], result->column_names,
 		                                result->column_types, result->column_name_to_mongo_path);
@@ -145,30 +132,47 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 		result->has_explicit_schema = true; // Explicit schema via columns parameter
 	}
 
-	// If no user-provided schema, check for __schema document (Atlas SQL)
-	if (!schema_set) {
-		schema_set = ParseSchemaFromAtlasDocument(context, collection, result->column_names, result->column_types,
-		                                          result->column_name_to_mongo_path);
-		if (schema_set) {
-			result->has_explicit_schema = true; // Explicit schema via __schema document
-		}
-	}
-
-	// If still no schema, infer from documents
-	if (!schema_set) {
-		InferSchemaFromDocuments(collection, result->sample_size, result->column_names, result->column_types,
-		                         result->column_name_to_mongo_path);
-	}
-
-	// Probe one document to discover which fields are actual BSON ObjectIds.
-	// This avoids the heuristic of guessing by column name during filter pushdown.
-	DetectObjectIdColumns(collection, result->objectid_columns);
+	MongoBindSchema(context, *result, schema_set);
 
 	// Set return types and names
 	return_types = result->column_types;
 	names = MongoMakeColumnNames(result->column_names);
 
 	return std::move(result);
+}
+
+void MongoBindSchema(ClientContext &context, MongoScanData &result, bool schema_already_set) {
+	// Ensure MongoDB instance is initialized
+	GetMongoInstance();
+
+	// Create connection
+	result.connection = make_shared_ptr<MongoConnection>(result.connection_string);
+
+	// Get collection
+	auto db = result.connection->client[result.database_name];
+	auto collection = db[result.collection_name];
+
+	// Schema resolution priority (when not already set by a columns parameter):
+	// 1. __schema document in collection (for Atlas SQL customers)
+	// 2. Infer from documents (fallback)
+	bool schema_set = schema_already_set;
+
+	if (!schema_set) {
+		schema_set = ParseSchemaFromAtlasDocument(context, collection, result.column_names, result.column_types,
+		                                          result.column_name_to_mongo_path);
+		if (schema_set) {
+			result.has_explicit_schema = true; // Explicit schema via __schema document
+		}
+	}
+
+	if (!schema_set) {
+		InferSchemaFromDocuments(collection, result.sample_size, result.column_names, result.column_types,
+		                         result.column_name_to_mongo_path);
+	}
+
+	// Probe one document to discover which fields are actual BSON ObjectIds.
+	// This avoids the heuristic of guessing by column name during filter pushdown.
+	DetectObjectIdColumns(collection, result.objectid_columns);
 }
 
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
@@ -721,6 +725,25 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	if (state.current && state.end && *state.current == *state.end) {
 		state.finished = true;
 	}
+}
+
+TableFunction GetMongoScanTableFunction() {
+	TableFunction mongo_scan("mongo_scan", {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+	                         MongoScanFunction, MongoScanBind, nullptr, MongoScanInitLocal);
+
+	mongo_scan.named_parameters["filter"] = LogicalType::VARCHAR;
+	mongo_scan.named_parameters["sample_size"] = LogicalType::BIGINT;
+	mongo_scan.named_parameters["columns"] = LogicalType::ANY;
+	mongo_scan.named_parameters["pipeline"] = LogicalType::VARCHAR;
+	mongo_scan.named_parameters["schema_mode"] = LogicalType::VARCHAR;
+
+	mongo_scan.filter_pushdown = true;
+	mongo_scan.projection_pushdown = true;
+	mongo_scan.filter_prune = true;
+	mongo_scan.pushdown_complex_filter = MongoPushdownComplexFilter;
+	mongo_scan.to_string = MongoScanToString;
+
+	return mongo_scan;
 }
 
 void RegisterMongoTableFunction(DatabaseInstance &db) {

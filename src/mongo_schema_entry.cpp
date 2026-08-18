@@ -1,5 +1,6 @@
 #include "mongo_schema_entry.hpp"
 #include "mongo_compat.hpp"
+#include "mongo_insert.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/parser/parsed_data/create_view_info.hpp"
@@ -38,6 +39,24 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::LookupEntry(CatalogTransaction tran
 
 	lock_guard<mutex> lock(entry_lock);
 
+	// A TABLE_ENTRY lookup (both SELECT and INSERT resolve this way) prefers a base table entry, so that INSERT binds.
+	// Fall back to the view path when the collection has no inferable schema (empty / non-existent collection).
+	if (lookup_info.GetCatalogType() == CatalogType::TABLE_ENTRY && transaction.context) {
+		auto table_it = tables.find(entry_name);
+		if (table_it != tables.end()) {
+			return table_it->second.get();
+		}
+		if (!connection_string.empty() && !database_name.empty()) {
+			auto table_entry =
+			    MongoCreateTableEntry(catalog, *this, *transaction.context, connection_string, database_name, entry_name);
+			if (table_entry) {
+				auto shared_entry = shared_ptr<CatalogEntry>(table_entry.release());
+				tables[entry_name] = shared_entry;
+				return shared_entry.get();
+			}
+		}
+	}
+
 	auto it = views.find(entry_name);
 	if (it != views.end()) {
 		return it->second.get();
@@ -65,6 +84,12 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::LookupEntry(CatalogTransaction tran
 void MongoSchemaEntry::SetDefaultGenerator(unique_ptr<DefaultGenerator> generator) {
 	lock_guard<mutex> lock(entry_lock);
 	default_generator = std::move(generator);
+}
+
+void MongoSchemaEntry::SetConnectionInfo(const string &connection_string_p, const string &database_name_p) {
+	lock_guard<mutex> lock(entry_lock);
+	connection_string = connection_string_p;
+	database_name = database_name_p;
 }
 
 optional_ptr<CatalogEntry> MongoSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
@@ -177,6 +202,7 @@ void MongoSchemaEntry::InvalidateCache() {
 	is_loaded = false;
 	loaded_collection_names.clear();
 	views.clear();
+	tables.clear();
 }
 
 shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &context, const string &collection_name) {

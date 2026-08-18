@@ -42,6 +42,10 @@ struct MongoScanData : public TableFunctionData {
 	SchemaMode schema_mode;
 	//! Whether an explicit schema was provided (only enforce schema_mode when true)
 	bool has_explicit_schema;
+	//! True when this scan comes from a MongoTableEntry (base table) rather than the mongo_scan table function. The
+	//! MongoDB optimizer's aggregate / top-N / complex-expression rewrites assume the table-function GET's column
+	//! binding space; a base-table GET remaps column indices, so those rewrites are skipped for it.
+	bool is_base_table = false;
 
 	// Schema information
 	vector<string> column_names;
@@ -136,6 +140,16 @@ void DetectObjectIdColumns(mongocxx::collection &collection, std::unordered_set<
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
                                               const vector<string> &all_column_names,
                                               const unordered_map<string, string> &column_name_to_mongo_path);
+
+// Populate a MongoScanData's schema (column names/types, path map, ObjectId columns) and connection from its
+// connection_string/database_name/collection_name. When schema_already_set is true, the columns are taken as given
+// (e.g. from the `columns` parameter) and only the connection and ObjectId probe run. Shared by the mongo_scan bind
+// and the catalog table entry.
+void MongoBindSchema(ClientContext &context, MongoScanData &result, bool schema_already_set);
+
+// Build the mongo_scan TableFunction with all pushdown callbacks wired. Used both for function registration and by the
+// catalog table entry's GetScanFunction.
+TableFunction GetMongoScanTableFunction();
 
 class MongoClearCacheFunction : public TableFunction {
 public:

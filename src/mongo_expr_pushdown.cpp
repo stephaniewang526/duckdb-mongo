@@ -425,6 +425,23 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
                                 vector<unique_ptr<Expression>> &filters) {
 	auto &mongo_data = bind_data->Cast<MongoScanData>();
 
+	// A base-table LogicalGet numbers column references by their position in get.GetColumnIds() (the projected
+	// columns), not by schema position as the mongo_scan table function does. Remap to schema-ordered names so a
+	// column reference resolves to the right field. (The table-function path uses column_names directly.)
+	vector<string> remapped_column_names;
+	const vector<string> *effective_column_names = &mongo_data.column_names;
+	if (mongo_data.is_base_table) {
+		auto &col_ids = get.GetColumnIds();
+		remapped_column_names.resize(col_ids.size());
+		for (idx_t i = 0; i < col_ids.size(); i++) {
+			idx_t schema_idx = col_ids[i].GetPrimaryIndex();
+			if (schema_idx < mongo_data.column_names.size()) {
+				remapped_column_names[i] = mongo_data.column_names[schema_idx];
+			}
+		}
+		effective_column_names = &remapped_column_names;
+	}
+
 	// Build MongoDB $expr document for complex filters
 	bsoncxx::builder::basic::document expr_builder;
 	bool has_complex_filter = false;
@@ -443,7 +460,7 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 
 		// Try to convert expression to MongoDB $expr
 		bsoncxx::builder::basic::document expr_doc;
-		if (ConvertExpressionToMongoExpr(*filter_expr, mongo_data.column_names, mongo_data.column_name_to_mongo_path,
+		if (ConvertExpressionToMongoExpr(*filter_expr, *effective_column_names, mongo_data.column_name_to_mongo_path,
 		                                 get.table_index, expr_doc)) {
 			// Successfully converted - merge into $expr document
 			// Merge expressions using $and if we have multiple

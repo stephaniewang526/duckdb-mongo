@@ -23,6 +23,9 @@ public:
 	// Set default generator for views (collections)
 	void SetDefaultGenerator(unique_ptr<DefaultGenerator> generator);
 
+	// Connection info for surfacing collections as base tables (set alongside the default generator).
+	void SetConnectionInfo(const string &connection_string, const string &database_name);
+
 	// Required SchemaCatalogEntry methods
 	optional_ptr<CatalogEntry> CreateTable(CatalogTransaction transaction, BoundCreateTableInfo &info) override;
 	optional_ptr<CatalogEntry> CreateFunction(CatalogTransaction transaction, CreateFunctionInfo &info) override;
@@ -54,7 +57,10 @@ private:
 	mutex entry_lock;
 	mutex load_lock; // Separate lock for loading to prevent deadlocks
 	case_insensitive_map_t<shared_ptr<CatalogEntry>> views;
+	case_insensitive_map_t<shared_ptr<CatalogEntry>> tables; // Collections surfaced as base tables (for INSERT + reads)
 	unique_ptr<DefaultGenerator> default_generator;
+	string connection_string;
+	string database_name;
 	atomic<bool> is_loaded = false;         // Track if collections have been loaded
 	vector<string> loaded_collection_names; // Collection names loaded from MongoDB (for lazy view creation)
 };

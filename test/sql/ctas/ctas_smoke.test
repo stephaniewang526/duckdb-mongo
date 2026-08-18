@@ -1,0 +1,48 @@
+# CREATE TABLE AS smoke test for the MongoDB extension.
+#
+# MongoDB auto-creates a collection on first write, so CREATE TABLE AS needs no
+# pre-seeded schema: the SELECT's output columns become the collection's fields in
+# order. dropDatabase() in the seed harness guarantees ctas_smoke is absent on a
+# fresh seed, so the CREATE succeeds and the rows read back through the same
+# base-table path INSERT uses.
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+CREATE TABLE m.duckdb_mongo_test.ctas_smoke AS
+SELECT * FROM (VALUES (1, 'ann'), (2, 'bo')) AS t(_id, name);
+
+query IT
+SELECT _id, name FROM m.duckdb_mongo_test.ctas_smoke ORDER BY _id;
+----
+1	ann
+2	bo
+
+# An empty result set still creates the collection (create_collection runs before
+# the insert), so a follow-up read resolves the table and returns no rows rather
+# than failing to find it. An empty collection infers only _id, so count is the
+# schema-independent way to confirm it exists and holds no documents.
+statement ok
+CREATE TABLE m.duckdb_mongo_test.ctas_empty AS
+SELECT * FROM (VALUES (1, 'x')) AS t(_id, name) WHERE 1 = 0;
+
+query I
+SELECT count(*) FROM m.duckdb_mongo_test.ctas_empty;
+----
+0
+
+# ETL from an existing collection into a new one: CREATE TABLE AS over a mongo_scan.
+statement ok
+CREATE TABLE m.duckdb_mongo_test.ctas_from_scan AS
+SELECT _id, name, age FROM m.duckdb_mongo_test.users WHERE age >= 30 ORDER BY age;
+
+query TI
+SELECT name, age FROM m.duckdb_mongo_test.ctas_from_scan ORDER BY age;
+----
+Alice	30
+Charlie	35

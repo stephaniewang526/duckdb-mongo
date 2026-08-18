@@ -29,6 +29,9 @@ set(EXTENSION_SOURCES
     src/mongo_expr_pushdown.cpp
     src/mongo_storage_extension.cpp
     src/mongo_catalog.cpp
+    src/mongo_insert.cpp
+    src/mongo_copy.cpp
+    src/mongo_batch_sink.cpp
     src/mongo_schema_entry.cpp
     src/mongo_instance.cpp
     src/mongo_transaction.cpp
