@@ -3,6 +3,7 @@
 #include "mongo_table_function.hpp"
 #include "mongo_filter_pushdown.hpp"
 #include "mongo_duckdb_utils.hpp"
+#include "schema/mongo_schema_inference_internal.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -267,48 +268,14 @@ static bool GetOrderColumnName(const Expression &expr, string &name) {
 	return false;
 }
 
-// BSON $type aliases that scan to a non-NULL value of this column type (mirrors IsBSONTypeCompatible).
+// $type aliases of the BSON types that scan to a non-NULL value of this column type.
 // Empty means COUNT(col) is not pushed down.
 static vector<string> CountableBSONTypes(LogicalTypeId type) {
-	switch (type) {
-	case LogicalTypeId::VARCHAR:
-		return {"double",
-		        "string",
-		        "object",
-		        "array",
-		        "binData",
-		        "objectId",
-		        "bool",
-		        "date",
-		        "regex",
-		        "dbPointer",
-		        "javascript",
-		        "symbol",
-		        "javascriptWithScope",
-		        "int",
-		        "timestamp",
-		        "long",
-		        "decimal",
-		        "undefined",
-		        "minKey",
-		        "maxKey"};
-	case LogicalTypeId::BIGINT:
-		return {"int", "long", "double"};
-	case LogicalTypeId::HUGEINT:
-	case LogicalTypeId::DOUBLE:
-		return {"int", "long", "double", "decimal"};
-	case LogicalTypeId::BOOLEAN:
-		return {"bool"};
-	case LogicalTypeId::DATE:
-	case LogicalTypeId::TIMESTAMP:
-		return {"date"};
-	case LogicalTypeId::STRUCT:
-		return {"object"};
-	case LogicalTypeId::LIST:
-		return {"array"};
-	default:
-		return {};
+	vector<string> aliases;
+	for (auto bson_type : CompatibleBSONTypes(type)) {
+		aliases.push_back(BSONTypeAlias(bson_type));
 	}
+	return aliases;
 }
 
 static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const LogicalGet &get,
