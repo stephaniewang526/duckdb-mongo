@@ -28,6 +28,7 @@ set(EXTENSION_SOURCES
     src/schema/mongo_schema_inference_helpers.cpp
     src/mongo_filter_pushdown.cpp
     src/mongo_expr_pushdown.cpp
+    src/mongo_query_log.cpp
     src/mongo_storage_extension.cpp
     src/mongo_catalog.cpp
     src/mongo_insert.cpp

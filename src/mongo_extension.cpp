@@ -9,6 +9,7 @@
 #include "mongo_secrets.hpp"
 #include "mongo_copy.hpp"
 #include "mongo_duckdb_utils.hpp"
+#include "mongo_query_log.hpp"
 #include "duckdb/function/table_function.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/extension_callback_manager.hpp"
@@ -93,6 +94,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 
 	// Register MongoDB storage extension for ATTACH support
 	auto &db = loader.GetDatabaseInstance();
+	RegisterMongoQueryLogType(db);
 	auto &config = DBConfig::GetConfig(db);
 	config.AddExtensionOption(
 	    "mongo_enable_direct_scan",

@@ -1,0 +1,271 @@
+# name: test/sql/query/mongo_query_log.test
+# description: Assert the exact find/aggregate commands a scan sends, via the MongoQuery log type
+# group: [query]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+CALL enable_logging('MongoQuery');
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+# json() canonicalizes spacing, which differs between bsoncxx versions
+statement ok
+CREATE MACRO mongo_find() AS TABLE
+SELECT DISTINCT json_extract_string(message, '$.find.filter') AS filter,
+       json_extract_string(message, '$.find.projection') AS projection
+FROM duckdb_logs WHERE type = 'MongoQuery' AND json_exists(message, '$.find');
+
+statement ok
+CREATE MACRO mongo_aggregate() AS TABLE
+SELECT DISTINCT json_extract_string(message, '$.aggregate.pipeline') AS pipeline
+FROM duckdb_logs WHERE type = 'MongoQuery' AND json_exists(message, '$.aggregate');
+
+# --- filter and projection ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM m.users WHERE age = 30;
+----
+Alice
+
+query TT
+FROM mongo_find();
+----
+{"age":{"$eq":30}}	{"name":1,"_id":1}
+
+# --- non-dense IN list (optional filter) ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM m.users WHERE name IN ('Alice', 'Charlie') ORDER BY name;
+----
+Alice
+Charlie
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"name":{"$in":["Alice","Charlie"]}}
+
+# --- same-column OR chain (optional filter) ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM m.users WHERE age < 26 OR age > 34 ORDER BY name;
+----
+Bob
+Charlie
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"age":{"$lt":26}},{"age":{"$gt":34}}]}
+
+# --- equality and IN on the same column stay separate terms ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT count(*) FROM (SELECT status FROM m.orders WHERE status = 'pending' AND status IN ('pending', 'cancelled'));
+----
+2
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$and":[{"status":{"$eq":"pending"}},{"status":{"$in":["pending","cancelled"]}}]}
+
+# --- ObjectId values in $in ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM m.users WHERE _id IN ('507f1f77bcf86cd799439011', '507f1f77bcf86cd799439013') ORDER BY name;
+----
+Alice
+Charlie
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"_id":{"$in":[{"$oid":"507f1f77bcf86cd799439011"},{"$oid":"507f1f77bcf86cd799439013"}]}}
+
+# --- <> must not match null or missing fields ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM m.users WHERE name <> 'Alice' ORDER BY name;
+----
+Bob
+Charlie
+Diana
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"name":{"$nin":["Alice",null]}}
+
+# --- the manual filter parameter is ANDed with pushed filters ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users', filter := '{"age": {"$gt": 26}}')
+WHERE name <> 'Charlie' ORDER BY name;
+----
+Alice
+Diana
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$and":[{"name":{"$nin":["Charlie",null]}},{"age":{"$gt":26}}]}
+
+# --- constants are encoded by type: FLOAT and SMALLINT as numbers, DECIMAL as decimal128 ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'price': 'FLOAT', 'quantity': 'SMALLINT'})
+WHERE price > 500 AND quantity >= 50;
+----
+Laptop
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$and":[{"price":{"$gt":500.0}},{"quantity":{"$gte":50}}]}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'price': 'DECIMAL(10,2)'})
+WHERE price > 500;
+----
+Laptop
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"price":{"$gt":{"$numberDecimal":"500.00"}}}
+
+# --- struct field predicates become dotted paths ---
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR, zip VARCHAR)'})
+WHERE address.city = 'New York';
+----
+Alice
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"address.city":{"$eq":"New York"}}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR, zip VARCHAR)'})
+WHERE address.zip BETWEEN '10000' AND '20000';
+----
+Alice
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"address.zip":{"$gte":"10000","$lte":"20000"}}
+
+# an OR may mix struct fields and top-level columns
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR, zip VARCHAR)'})
+WHERE address.city IN ('New York', 'Chicago') OR age > 100 ORDER BY name;
+----
+Alice
+Charlie
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"address.city":{"$in":["New York","Chicago"]}},{"age":{"$gt":100}}]}
+
+# table filters, struct field predicates and $expr are ANDed
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR, zip VARCHAR)'})
+WHERE address.city = 'Chicago' AND age > 1 AND length(name) > 2;
+----
+Charlie
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$and":[{"age":{"$gt":1}},{"address.city":{"$eq":"Chicago"}},{"$expr":{"$gt":[{"$strLenCP":["$name"]},2]}}]}
+
+# whole-struct equality cannot be expressed as a match and stays in DuckDB
+statement ok
+CALL truncate_duckdb_logs();
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR, zip VARCHAR)'})
+WHERE address = {'city': 'New York', 'zip': '10001'};
+----
+Alice
+
+query T
+SELECT filter FROM mongo_find();
+----
+{}
+
+# struct field predicates are folded into aggregate pipelines
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT count(*) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR, zip VARCHAR)'})
+WHERE address.city <> 'New York';
+----
+3
+
+query T
+SELECT pipeline FROM mongo_aggregate();
+----
+[{"$match":{"address.city":{"$nin":["New York",null]}}},{"$count":"count"}]
+
+statement ok
+DETACH m;

@@ -568,41 +568,94 @@ Value BSONArrayToList(const bsoncxx::array::view &array, const LogicalType &list
 	}
 }
 
-bool IsBSONTypeCompatible(bsoncxx::type bson_type, LogicalTypeId expected_type) {
+const vector<bsoncxx::type> &CompatibleBSONTypes(LogicalTypeId expected_type) {
+	using bsoncxx::type;
+	static const vector<type> none;
+	// Everything except null converts to a string
+	static const vector<type> any = {type::k_double, type::k_string,     type::k_document,  type::k_array,
+	                                 type::k_binary, type::k_undefined,  type::k_oid,       type::k_bool,
+	                                 type::k_date,   type::k_regex,      type::k_dbpointer, type::k_code,
+	                                 type::k_symbol, type::k_codewscope, type::k_int32,     type::k_timestamp,
+	                                 type::k_int64,  type::k_decimal128, type::k_minkey,    type::k_maxkey};
+	static const vector<type> integers = {type::k_int32, type::k_int64, type::k_double};
+	static const vector<type> numerics = {type::k_int32, type::k_int64, type::k_double, type::k_decimal128};
+	static const vector<type> booleans = {type::k_bool};
+	static const vector<type> dates = {type::k_date};
+	static const vector<type> documents = {type::k_document};
+	static const vector<type> arrays = {type::k_array};
 	switch (expected_type) {
 	case LogicalTypeId::VARCHAR:
-		return true; // Everything can be converted to string
-
+		return any;
 	case LogicalTypeId::BIGINT:
-		// Accept int32, int64, double (if within range)
-		return bson_type == bsoncxx::type::k_int32 || bson_type == bsoncxx::type::k_int64 ||
-		       bson_type == bsoncxx::type::k_double;
-
+		return integers;
 	case LogicalTypeId::HUGEINT:
-		// Accept int32, int64, double, decimal128
-		return bson_type == bsoncxx::type::k_int32 || bson_type == bsoncxx::type::k_int64 ||
-		       bson_type == bsoncxx::type::k_double || bson_type == bsoncxx::type::k_decimal128;
-
 	case LogicalTypeId::DOUBLE:
-		// Accept int32, int64, double, decimal128
-		return bson_type == bsoncxx::type::k_int32 || bson_type == bsoncxx::type::k_int64 ||
-		       bson_type == bsoncxx::type::k_double || bson_type == bsoncxx::type::k_decimal128;
-
+		return numerics;
 	case LogicalTypeId::BOOLEAN:
-		return bson_type == bsoncxx::type::k_bool;
-
+		return booleans;
 	case LogicalTypeId::DATE:
 	case LogicalTypeId::TIMESTAMP:
-		return bson_type == bsoncxx::type::k_date;
-
+		return dates;
 	case LogicalTypeId::STRUCT:
-		return bson_type == bsoncxx::type::k_document;
-
+		return documents;
 	case LogicalTypeId::LIST:
-		return bson_type == bsoncxx::type::k_array;
-
+		return arrays;
 	default:
-		return false;
+		return none;
+	}
+}
+
+bool IsBSONTypeCompatible(bsoncxx::type bson_type, LogicalTypeId expected_type) {
+	auto &compatible = CompatibleBSONTypes(expected_type);
+	return std::find(compatible.begin(), compatible.end(), bson_type) != compatible.end();
+}
+
+const char *BSONTypeAlias(bsoncxx::type type) {
+	switch (type) {
+	case bsoncxx::type::k_double:
+		return "double";
+	case bsoncxx::type::k_string:
+		return "string";
+	case bsoncxx::type::k_document:
+		return "object";
+	case bsoncxx::type::k_array:
+		return "array";
+	case bsoncxx::type::k_binary:
+		return "binData";
+	case bsoncxx::type::k_undefined:
+		return "undefined";
+	case bsoncxx::type::k_oid:
+		return "objectId";
+	case bsoncxx::type::k_bool:
+		return "bool";
+	case bsoncxx::type::k_date:
+		return "date";
+	case bsoncxx::type::k_null:
+		return "null";
+	case bsoncxx::type::k_regex:
+		return "regex";
+	case bsoncxx::type::k_dbpointer:
+		return "dbPointer";
+	case bsoncxx::type::k_code:
+		return "javascript";
+	case bsoncxx::type::k_symbol:
+		return "symbol";
+	case bsoncxx::type::k_codewscope:
+		return "javascriptWithScope";
+	case bsoncxx::type::k_int32:
+		return "int";
+	case bsoncxx::type::k_timestamp:
+		return "timestamp";
+	case bsoncxx::type::k_int64:
+		return "long";
+	case bsoncxx::type::k_decimal128:
+		return "decimal";
+	case bsoncxx::type::k_minkey:
+		return "minKey";
+	case bsoncxx::type::k_maxkey:
+		return "maxKey";
+	default:
+		throw InternalException("BSONTypeAlias: unknown BSON type");
 	}
 }
 

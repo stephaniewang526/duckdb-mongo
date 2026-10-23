@@ -145,8 +145,9 @@ Two MongoDB databases are used:
 
 ### Adding Filter Pushdown Support
 
-1. Add translation logic in `mongo_filter_pushdown.cpp` (for simple filters) or `mongo_expr_pushdown.cpp` (for expressions)
-2. Add tests in `test/sql/query/` (both correctness and EXPLAIN plan verification)
+1. Add translation logic in `mongo_filter_pushdown.cpp` (`TranslatePredicateToMongo`, shared by table filters and the struct field path in `mongo_expr_pushdown.cpp`) or `mongo_expr_pushdown.cpp` (`$expr` expressions)
+2. Keep `MongoCanPushdownFilterType` in sync: it gates both `supports_pushdown_type` and constant encoding, and a table filter DuckDB considers pushed that cannot be translated throws rather than widening the scan
+3. Add tests in `test/sql/query/`: correctness, and the exact command sent to MongoDB via the `MongoQuery` log (see `test/sql/query/mongo_query_log.test`)
 
 ### SQLLogicTest Format
 
@@ -197,7 +198,7 @@ For failures on the **stable** job, reproduce with the pinned submodule as-is (`
 
 - **Stale build**: The `make release` repository packaging step can fail with `FileExistsError`. Fix: `rm -rf build/release/repository` and rebuild.
 - **Test failures without MongoDB**: All integration tests skip. This is expected — they need `MONGODB_TEST_DATABASE_AVAILABLE=1` and a running MongoDB.
-- **JSON format in tests**: Don't assert exact JSON strings from `bsoncxx::to_json()` — spacing varies by library version. Use `LIKE '%expected_substring%'` or `IS NOT NULL` checks instead.
+- **JSON format in tests**: Don't assert exact JSON strings from `bsoncxx::to_json()` in EXPLAIN output — spacing varies by library version. To assert what MongoDB receives, `CALL enable_logging('MongoQuery')` and read `duckdb_logs` through `json_extract_string()` (requires `require json`), which canonicalizes spacing; see `test/sql/query/mongo_query_log.test`.
 - **Underscore flattening**: Nested doc `a.b` becomes column `a_b`. If a top-level field `a_b` also exists, there's a name collision. Be aware of this when working with schema inference.
 - **DuckDB submodule**: The `duckdb` directory is a git submodule pinned to a specific version. Don't update it without validating compatibility.
 

@@ -3,8 +3,10 @@
 #include "mongo_filter_pushdown.hpp"
 #include "mongo_expr_pushdown.hpp"
 #include "mongo_duckdb_utils.hpp"
+#include "mongo_query_log.hpp"
 #include "mongo_secrets.hpp"
 #include "mongo_catalog.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
@@ -322,14 +324,9 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	result->filter_query = data.filter_query;
 	result->pipeline_json = data.pipeline_json;
 
-	// Projection pushdown: collect columns needed (selected + filter columns that couldn't be pushed down)
-	unordered_set<idx_t> needed_column_indices;
-
-	// Determine which columns to fetch based on filter_prune optimization
-	// When filter_prune is enabled and projection_ids is populated, DuckDB has already
-	// excluded filter columns that aren't used elsewhere in the query plan
-	// The output chunk follows projection_ids whenever it is set, even when it lists every column: DuckDB 2.0 appends
-	// the column of a filter it evaluates itself (see supports_pushdown_type) at the end.
+	// Projection pushdown: the output chunk follows projection_ids whenever it is set, even when it lists every
+	// column, because DuckDB 2.0 appends the column of a filter it evaluates itself (see supports_pushdown_type) at
+	// the end. Filter columns DuckDB pruned are not fetched: their filters run server-side.
 	vector<column_t> columns_to_fetch;
 	if (!input.projection_ids.empty()) {
 		// projection_ids contains indices into input.column_ids
@@ -339,15 +336,7 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 			}
 		}
 	} else {
-		// No filter pruning: use all column_ids
 		columns_to_fetch = input.column_ids;
-	}
-
-	// Add selected columns to needed set
-	for (column_t col_id : columns_to_fetch) {
-		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-			needed_column_indices.insert(col_id);
-		}
 	}
 
 	// Get collection
@@ -392,6 +381,12 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 			pipeline.append_stage(it->get_document().value);
 		}
 
+		{
+			bsoncxx::builder::basic::document body;
+			body.append(bsoncxx::builder::basic::kvp("pipeline", stages));
+			DUCKDB_LOG(context, MongoQueryLogType, data.database_name, data.collection_name, "aggregate", body.view());
+		}
+
 		mongocxx::options::aggregate agg_opts;
 		result->cursor = make_uniq<mongocxx::cursor>(collection.aggregate(pipeline, agg_opts));
 		result->current = make_uniq<mongocxx::cursor::iterator>(result->cursor->begin());
@@ -399,161 +394,47 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		return std::move(result);
 	}
 
-	// Build query from pushed-down filters first to determine which filters were successfully pushed down
-	bsoncxx::document::view_or_value query_filter;
-	bool filters_pushed_down = false;
-	if (input.filters) {
-		// Map filter column indices from column_ids space to schema space
-		unordered_map<idx_t, idx_t> filter_index_map;
-		for (size_t i = 0; i < input.column_ids.size(); i++) {
-			column_t col_id = input.column_ids[i];
-			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-				filter_index_map[i] = col_id;
-			}
-		}
-
-		// Create a new filter set with remapped indices
+	// Every table filter DuckDB hands us is enforced server-side (ConvertFiltersToMongoQuery throws otherwise), so
+	// the find() filter is the AND of the table filters, the manual filter := parameter, struct field predicates and
+	// the $expr document collected by pushdown_complex_filter.
+	vector<bsoncxx::document::value> query_conjuncts;
+	if (input.filters && MongoHasFilters(*input.filters)) {
+		// Filters are keyed by position in column_ids; remap to schema column indices.
 		auto remapped_filters = make_uniq<TableFilterSet>();
 		MongoForEachFilter(*input.filters, [&](idx_t col_idx, TableFilter &filter) {
-			auto it = filter_index_map.find(col_idx);
-			if (it != filter_index_map.end()) {
-				MongoSetFilter(*remapped_filters, it->second, MongoCopyFilter(filter));
+			if (col_idx < input.column_ids.size()) {
+				column_t col_id = input.column_ids[col_idx];
+				if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
+					MongoSetFilter(*remapped_filters, col_id, MongoCopyFilter(filter));
+				}
 			}
 		});
-
-		// Only attempt conversion if we successfully remapped at least one filter
-		if (MongoHasFilters(*remapped_filters)) {
-			// Convert DuckDB filters to MongoDB query using remapped indices
-			auto mongo_filter = ConvertFiltersToMongoQuery(remapped_filters.get(), data.column_names, data.column_types,
-			                                               data.column_name_to_mongo_path, data.objectid_columns);
-
-			// Check if filters were successfully pushed down (non-empty MongoDB query)
-			// If filters are pushed down to MongoDB, MongoDB filters server-side and we don't need filter columns
-			auto filter_view = mongo_filter.view();
-			// Count non-empty fields in the filter document
-			idx_t filter_field_count = 0;
-			for (auto it = filter_view.begin(); it != filter_view.end(); ++it) {
-				filter_field_count++;
-			}
-			// Filters were pushed down if we have a non-empty filter document
-			// (empty document means conversion failed or filters couldn't be converted)
-			filters_pushed_down = (filter_field_count > 0);
-
-			query_filter = std::move(mongo_filter);
-		} else {
-			// No filters could be remapped, so they can't be pushed down
-			filters_pushed_down = false;
-			query_filter = bsoncxx::builder::stream::document {} << bsoncxx::builder::stream::finalize;
-		}
-
-		// Merge complex filter expressions ($expr) with simple filters
-		if (!data.complex_filter_expr.view().empty()) {
-			bsoncxx::builder::basic::document merged_query;
-			auto filter_view = query_filter.view();
-
-			// Copy all simple filters to merged query
-			for (auto it = filter_view.begin(); it != filter_view.end(); ++it) {
-				merged_query.append(bsoncxx::builder::basic::kvp(it->key(), it->get_value()));
-			}
-
-			// Add complex filter ($expr)
-			auto complex_view = data.complex_filter_expr.view();
-			if (!complex_view.empty()) {
-				merged_query.append(bsoncxx::builder::basic::kvp("$expr", complex_view));
-			}
-
-			query_filter = merged_query.extract();
-			filters_pushed_down = true;
-		}
-	} else if (!result->filter_query.empty()) {
-		query_filter = bsoncxx::from_json(result->filter_query);
-		filters_pushed_down = true; // Manual filter query means filters are pushed down
-	} else if (!data.complex_filter_expr.view().empty()) {
-		// Only complex filters, no simple filters
-		bsoncxx::builder::basic::document query_with_expr;
-		auto complex_view = data.complex_filter_expr.view();
-		query_with_expr.append(bsoncxx::builder::basic::kvp("$expr", complex_view));
-		query_filter = query_with_expr.extract();
-		filters_pushed_down = true;
-	} else {
-		query_filter = bsoncxx::builder::stream::document {} << bsoncxx::builder::stream::finalize;
+		query_conjuncts.push_back(ConvertFiltersToMongoQuery(remapped_filters.get(), data.column_names,
+		                                                     data.column_types, data.column_name_to_mongo_path,
+		                                                     data.objectid_columns));
 	}
-
-	// Add filter columns to projection only if filters weren't pushed down to MongoDB.
-	// Pushed-down filters are handled server-side, so we don't need those columns.
-	// Unpushed filters require columns for post-scan filtering in DuckDB.
-	if (input.filters && MongoHasFilters(*input.filters) && !input.column_ids.empty() && !filters_pushed_down) {
-		// Map filter indices from column_ids space to schema space
-		unordered_map<idx_t, idx_t> filter_index_map;
-		for (size_t i = 0; i < input.column_ids.size(); i++) {
-			column_t col_id = input.column_ids[i];
-			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-				filter_index_map[i] = col_id;
-			}
-		}
-		// Add filter columns to needed set (only if filters weren't pushed down)
-		MongoForEachFilter(*input.filters, [&](idx_t col_idx, TableFilter &filter) {
-			auto it = filter_index_map.find(col_idx);
-			if (it != filter_index_map.end()) {
-				needed_column_indices.insert(it->second);
-			}
-		});
+	if (!result->filter_query.empty()) {
+		query_conjuncts.push_back(bsoncxx::from_json(result->filter_query));
 	}
+	if (!data.match_filter.view().empty()) {
+		query_conjuncts.push_back(bsoncxx::document::value(data.match_filter.view()));
+	}
+	if (!data.complex_filter_expr.view().empty()) {
+		bsoncxx::builder::basic::document expr_doc;
+		expr_doc.append(bsoncxx::builder::basic::kvp("$expr", data.complex_filter_expr.view()));
+		query_conjuncts.push_back(expr_doc.extract());
+	}
+	bsoncxx::document::value query_filter = MongoAndDocuments(std::move(query_conjuncts));
 
-	// Store requested columns in the order of the output chunk (columns_to_fetch)
-	// This is critical: output.data columns must match the order DuckDB expects
-	unordered_set<idx_t> needed_set(needed_column_indices.begin(), needed_column_indices.end());
-
+	// Columns are materialized in output-chunk order (columns_to_fetch).
 	for (column_t col_id : columns_to_fetch) {
-		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-			idx_t col_idx = col_id;
-			if (needed_set.find(col_idx) != needed_set.end()) {
-				// Check if already added (to avoid duplicates)
-				bool already_added = false;
-				for (idx_t req_idx : result->requested_column_indices) {
-					if (req_idx == col_idx) {
-						already_added = true;
-						break;
-					}
-				}
-				if (!already_added) {
-					result->requested_column_indices.push_back(col_idx);
-					result->requested_column_names.push_back(data.column_names[col_idx]);
-					result->requested_column_types.push_back(data.column_types[col_idx]);
-				}
-			}
+		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size() &&
+		    std::find(result->requested_column_indices.begin(), result->requested_column_indices.end(), col_id) ==
+		        result->requested_column_indices.end()) {
+			result->requested_column_indices.push_back(col_id);
+			result->requested_column_names.push_back(data.column_names[col_id]);
+			result->requested_column_types.push_back(data.column_types[col_id]);
 		}
-	}
-
-	// Also add any filter columns that weren't in input.column_ids (if filters weren't pushed down)
-	if (input.filters && MongoHasFilters(*input.filters) && !input.column_ids.empty() && !filters_pushed_down) {
-		unordered_map<idx_t, idx_t> filter_index_map;
-		for (size_t i = 0; i < input.column_ids.size(); i++) {
-			column_t col_id = input.column_ids[i];
-			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-				filter_index_map[i] = col_id;
-			}
-		}
-		MongoForEachFilter(*input.filters, [&](idx_t col_idx, TableFilter &filter) {
-			auto it = filter_index_map.find(col_idx);
-			if (it != filter_index_map.end()) {
-				idx_t schema_col_idx = it->second;
-				if (needed_set.find(schema_col_idx) != needed_set.end()) {
-					bool already_added = false;
-					for (idx_t req_idx : result->requested_column_indices) {
-						if (req_idx == schema_col_idx) {
-							already_added = true;
-							break;
-						}
-					}
-					if (!already_added) {
-						result->requested_column_indices.push_back(schema_col_idx);
-						result->requested_column_names.push_back(data.column_names[schema_col_idx]);
-						result->requested_column_types.push_back(data.column_types[schema_col_idx]);
-					}
-				}
-			}
-		});
 	}
 
 	// Build MongoDB find options
@@ -625,8 +506,18 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		}
 	}
 
+	{
+		bsoncxx::builder::basic::document body;
+		body.append(bsoncxx::builder::basic::kvp("filter", query_filter.view()));
+		body.append(bsoncxx::builder::basic::kvp("projection", result->projection_document.view()));
+		if (result->limit > 0) {
+			body.append(bsoncxx::builder::basic::kvp("limit", result->limit));
+		}
+		DUCKDB_LOG(context, MongoQueryLogType, data.database_name, data.collection_name, "find", body.view());
+	}
+
 	// Create cursor with query filter and options (including projection if set)
-	result->cursor = make_uniq<mongocxx::cursor>(collection.find(query_filter, opts));
+	result->cursor = make_uniq<mongocxx::cursor>(collection.find(query_filter.view(), opts));
 	result->current = make_uniq<mongocxx::cursor::iterator>(result->cursor->begin());
 	result->end = make_uniq<mongocxx::cursor::iterator>(result->cursor->end());
 
@@ -747,10 +638,11 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	}
 }
 
-// DuckDB 2.0 pushes `struct_extract(column, ...) op constant` keyed on the parent column; DuckDB evaluates those.
+// Filters on other column types stay in DuckDB. That covers nested columns: DuckDB keys `struct_extract(column, ...)
+// op constant` on the parent column, and those predicates are pushed from MongoPushdownComplexFilter instead.
 static bool MongoSupportsPushdownType(const FunctionData &bind_data, idx_t col_idx) {
 	auto &data = bind_data.Cast<MongoScanData>();
-	return col_idx >= data.column_types.size() || !data.column_types[col_idx].IsNested();
+	return col_idx >= data.column_types.size() || MongoCanPushdownFilterType(data.column_types[col_idx]);
 }
 
 TableFunction GetMongoScanTableFunction() {

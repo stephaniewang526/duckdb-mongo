@@ -73,6 +73,11 @@ int GetBSONArrayDepth(const bsoncxx::array::view &array, int max_depth = 10);
 int GetListTypeDepth(const LogicalType &list_type);
 Value BSONArrayToList(const bsoncxx::array::view &array, const LogicalType &list_type);
 
+// BSON types (never null) that scan to a non-NULL value of a column of this DuckDB type. Shared by schema
+// enforcement and the COUNT(col) pushdown, which must agree on what counts as a value.
+const vector<bsoncxx::type> &CompatibleBSONTypes(LogicalTypeId expected_type);
 bool IsBSONTypeCompatible(bsoncxx::type bson_type, LogicalTypeId expected_type);
+// Alias accepted by MongoDB's $type operator.
+const char *BSONTypeAlias(bsoncxx::type type);
 
 } // namespace duckdb

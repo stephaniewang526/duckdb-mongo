@@ -56,10 +56,13 @@ struct MongoScanData : public TableFunctionData {
 
 	// Complex filter pushdown: MongoDB $expr queries for complex expressions
 	bsoncxx::document::value complex_filter_expr;
+	// Plain match terms consumed by pushdown_complex_filter (struct field predicates)
+	bsoncxx::document::value match_filter;
 
 	MongoScanData()
 	    : sample_size(100), schema_mode(SchemaMode::PERMISSIVE), has_explicit_schema(false),
-	      complex_filter_expr(bsoncxx::builder::basic::document {}.extract()) {
+	      complex_filter_expr(bsoncxx::builder::basic::document {}.extract()),
+	      match_filter(bsoncxx::builder::basic::document {}.extract()) {
 	}
 };
 
