@@ -2,7 +2,7 @@
 #include "mongo_instance.hpp"
 #include "mongo_filter_pushdown.hpp"
 #include "mongo_expr_pushdown.hpp"
-#include "mongo_compat.hpp"
+#include "mongo_duckdb_utils.hpp"
 #include "mongo_secrets.hpp"
 #include "mongo_catalog.hpp"
 #include "duckdb/common/types/timestamp.hpp"
@@ -10,13 +10,6 @@
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/planner/filter/constant_filter.hpp"
-#include "duckdb/planner/filter/in_filter.hpp"
-#include "duckdb/planner/filter/null_filter.hpp"
-#include "duckdb/planner/filter/conjunction_filter.hpp"
-#include "duckdb/planner/filter/optional_filter.hpp"
-#include "duckdb/planner/filter/dynamic_filter.hpp"
-#include "duckdb/planner/filter/struct_filter.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 #include "duckdb/execution/operator/helper/physical_limit.hpp"
 #include "duckdb/execution/operator/helper/physical_streaming_limit.hpp"
@@ -102,7 +95,7 @@ int64_t MongoDefaultSampleSize(ClientContext &context) {
 }
 
 unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBindInput &input,
-                                       vector<LogicalType> &return_types, MongoColumnNameVector &names) {
+                                       vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<MongoScanData>();
 
 	// Parse function arguments
@@ -172,7 +165,7 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 
 	// Set return types and names
 	return_types = result->column_types;
-	names = MongoMakeColumnNames(result->column_names);
+	names = MongoToIdentifiers(result->column_names);
 
 	return std::move(result);
 }
@@ -335,9 +328,10 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Determine which columns to fetch based on filter_prune optimization
 	// When filter_prune is enabled and projection_ids is populated, DuckDB has already
 	// excluded filter columns that aren't used elsewhere in the query plan
+	// The output chunk follows projection_ids whenever it is set, even when it lists every column: DuckDB 2.0 appends
+	// the column of a filter it evaluates itself (see supports_pushdown_type) at the end.
 	vector<column_t> columns_to_fetch;
-	if (input.CanRemoveFilterColumns() && !input.projection_ids.empty()) {
-		// Filter pruning is active: use projection_ids to get only columns actually needed
+	if (!input.projection_ids.empty()) {
 		// projection_ids contains indices into input.column_ids
 		for (idx_t proj_idx : input.projection_ids) {
 			if (proj_idx < input.column_ids.size()) {
@@ -506,14 +500,11 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		});
 	}
 
-	// Store requested columns in the order DuckDB requested them (from input.column_ids)
+	// Store requested columns in the order of the output chunk (columns_to_fetch)
 	// This is critical: output.data columns must match the order DuckDB expects
-	// input.column_ids contains the column indices in the order DuckDB wants them
 	unordered_set<idx_t> needed_set(needed_column_indices.begin(), needed_column_indices.end());
 
-	// First, add columns in the order DuckDB requested them (from input.column_ids)
-	// This preserves the SELECT clause order
-	for (column_t col_id : input.column_ids) {
+	for (column_t col_id : columns_to_fetch) {
 		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
 			idx_t col_idx = col_id;
 			if (needed_set.find(col_idx) != needed_set.end()) {
@@ -647,7 +638,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	auto &state = dynamic_cast<MongoScanState &>(*data_p.local_state);
 
 	if (state.finished) {
-		output.SetCardinality(0);
+		output.SetChildCardinality(0);
 		return;
 	}
 
@@ -666,10 +657,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 			++(*state.current);
 			count++;
 		}
-		for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
-			MongoSetVectorSize(output.data[col_idx], count);
-		}
-		output.SetCardinality(count);
+		output.SetChildCardinality(count);
 		if (*state.current == *state.end) {
 			state.finished = true;
 		}
@@ -700,8 +688,8 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		vec.SetVectorType(VectorType::FLAT_VECTOR);
 		if (((*column_types)[col_idx].id() == LogicalTypeId::LIST ||
 		     (*column_types)[col_idx].id() == LogicalTypeId::STRUCT) &&
-		    !MongoVectorHasAuxiliary(vec)) {
-			MongoVectorInitializeUninitialized(vec, STANDARD_VECTOR_SIZE);
+		    !vec.GetBufferRef()) {
+			vec.Initialize(VectorDataInitialization::UNINITIALIZED, STANDARD_VECTOR_SIZE);
 		}
 	}
 
@@ -714,10 +702,9 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		}
 		auto &vec = output.data[0];
 		vec.SetVectorType(VectorType::FLAT_VECTOR);
-		MongoFlatVectorGetDataMutable<int64_t>(vec)[0] = 0;
+		FlatVector::GetDataMutable<int64_t>(vec)[0] = 0;
 		FlatVector::SetNull(vec, 0, false);
-		MongoSetVectorSize(vec, 1);
-		output.SetCardinality(1);
+		output.SetChildCardinality(1);
 		state.finished = true;
 		return;
 	}
@@ -753,14 +740,17 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		// effectively dropping this row from the output
 	}
 
-	for (idx_t col_idx = 0; col_idx < output.ColumnCount(); col_idx++) {
-		MongoSetVectorSize(output.data[col_idx], count);
-	}
-	output.SetCardinality(count);
+	output.SetChildCardinality(count);
 
 	if (state.current && state.end && *state.current == *state.end) {
 		state.finished = true;
 	}
+}
+
+// DuckDB 2.0 pushes `struct_extract(column, ...) op constant` keyed on the parent column; DuckDB evaluates those.
+static bool MongoSupportsPushdownType(const FunctionData &bind_data, idx_t col_idx) {
+	auto &data = bind_data.Cast<MongoScanData>();
+	return col_idx >= data.column_types.size() || !data.column_types[col_idx].IsNested();
 }
 
 TableFunction GetMongoScanTableFunction() {
@@ -776,6 +766,7 @@ TableFunction GetMongoScanTableFunction() {
 	mongo_scan.filter_pushdown = true;
 	mongo_scan.projection_pushdown = true;
 	mongo_scan.filter_prune = true;
+	mongo_scan.supports_pushdown_type = MongoSupportsPushdownType;
 	mongo_scan.pushdown_complex_filter = MongoPushdownComplexFilter;
 	mongo_scan.to_string = MongoScanToString;
 

@@ -42,10 +42,6 @@ struct MongoScanData : public TableFunctionData {
 	SchemaMode schema_mode;
 	//! Whether an explicit schema was provided (only enforce schema_mode when true)
 	bool has_explicit_schema;
-	//! True when this scan comes from a MongoTableEntry (base table) rather than the mongo_scan table function. The
-	//! MongoDB optimizer's aggregate / top-N / complex-expression rewrites assume the table-function GET's column
-	//! binding space; a base-table GET remaps column indices, so those rewrites are skipped for it.
-	bool is_base_table = false;
 
 	// Schema information
 	vector<string> column_names;

@@ -134,26 +134,47 @@ jobs:
       run: |
         echo "Running all tests (ensuring no skips)..."
         make test_release 2>&1 | tee test.log
-        # Verify tests completed successfully
-        if ! grep -q "All tests passed" test.log; then
-          echo "ERROR: Tests did not complete successfully!"
+        # extension-ci-tools runs tests via duckdb/scripts/ci/run_tests.py, which ends with
+        # "ran tests: N passed[, M failed], K skipped in Xs".
+        SUMMARY=$(grep -E "ran tests: [0-9]+ passed" test.log | tail -1)
+        if [ -z "$SUMMARY" ]; then
+          echo "ERROR: Tests did not complete successfully (no summary line found)!"
           exit 1
         fi
-        # Extract test case count from "All tests passed (X assertions in Y test cases)"
-        TEST_CASES=$(grep "All tests passed" test.log | sed -n 's/.*assertions in \([0-9]*\) test cases.*/\1/p' | head -1)
-        if [ -z "$TEST_CASES" ]; then
-          TEST_CASES="0"
-        fi
-        if [ "$TEST_CASES" -lt "13" ]; then
-          echo "ERROR: Expected at least 13 test cases, but only $TEST_CASES ran!"
-          echo "Some tests may have been skipped."
+        echo "Summary: $SUMMARY"
+        PASSED=$(echo "$SUMMARY" | sed -n 's/.*ran tests: \([0-9]*\) passed.*/\1/p')
+        FAILED=$(echo "$SUMMARY" | sed -n 's/.*, \([0-9]*\) failed.*/\1/p')
+        SKIPPED=$(echo "$SUMMARY" | sed -n 's/.*, \([0-9]*\) skipped.*/\1/p')
+        PARTIAL=$(echo "$SUMMARY" | sed -n 's/.*(\([0-9]*\) partially).*/\1/p')
+        FAILED=${FAILED:-0}
+        SKIPPED=${SKIPPED:-0}
+        PARTIAL=${PARTIAL:-0}
+        if [ "$FAILED" -ne "0" ]; then
+          echo "ERROR: $FAILED test(s) failed!"
           exit 1
         fi
-        # Check for any explicit skip messages (excluding the success message)
-        if grep -i "skip" test.log | grep -v "All tests passed" | grep -v "test cases"; then
-          echo "ERROR: Some tests were skipped!"
-          grep -i "skip" test.log | grep -v "All tests passed" | grep -v "test cases"
+        if [ "$SKIPPED" -ne "0" ]; then
+          echo "ERROR: $SKIPPED test(s) were skipped!"
+          grep -A5 "Skipped tests" test.log || true
           exit 1
         fi
-        echo "All $TEST_CASES test cases executed successfully (no skips)"
+        if [ "$PARTIAL" -ne "0" ]; then
+          echo "ERROR: $PARTIAL test(s) were partially skipped!"
+          grep -A5 "Partially skipped tests" test.log || true
+          exit 1
+        fi
+        EXPECTED=$(find test -name '*.test' | wc -l)
+        if [ "$PASSED" -ne "$EXPECTED" ]; then
+          echo "ERROR: Expected $EXPECTED tests to pass, but $PASSED did!"
+          exit 1
+        fi
+        echo "All $PASSED tests executed successfully (no skips)"
 
+    # The Atlas integration test needs a live Atlas cluster, so CI only checks that it still compiles
+    - name: Compile Atlas integration test
+      env:
+        GEN: ninja
+        VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+        CMAKE_MAKE_PROGRAM: /usr/bin/ninja
+        EXT_FLAGS: -DMONGO_BUILD_ATLAS_INTEGRATION_TEST=ON
+      run: make release

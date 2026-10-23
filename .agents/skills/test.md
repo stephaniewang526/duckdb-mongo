@@ -21,6 +21,7 @@ If the build fails due to stale artifacts, run `rm -rf build/release/repository`
 ## Run Tests
 
 - **All tests**: `MONGODB_TEST_DATABASE_AVAILABLE=1 build/release/test/unittest`
+- **As CI runs them**: `MONGODB_TEST_DATABASE_AVAILABLE=1 make test_release` (files run in parallel through `duckdb/scripts/ci/run_tests.py`, so write tests may overlap with listing tests)
 - **Single file**: `MONGODB_TEST_DATABASE_AVAILABLE=1 build/release/test/unittest "test/sql/schema/schema.test"`
 - **By keyword**: find matching files with `find test/sql -name "*.test" -path "*<keyword>*"` and run each match
 

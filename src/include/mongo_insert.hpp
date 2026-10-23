@@ -3,7 +3,7 @@
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/storage/table_storage_info.hpp"
-#include "mongo_compat.hpp"
+#include "mongo_duckdb_utils.hpp"
 #include "mongo_table_function.hpp"
 #include <bsoncxx/builder/basic/document.hpp>
 #include <mongocxx/collection.hpp>
@@ -36,13 +36,10 @@ public:
 	TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;
 	TableStorageInfo GetStorageInfo(ClientContext &context) override;
 	DataTable &GetStorage() override;
-#ifdef DUCKDB_MAIN_VECTOR_API
-	// DuckDB main moved the column list out of TableCatalogEntry into each implementation.
 	const ColumnList &GetColumns() const override;
 
 private:
 	ColumnList columns;
-#endif
 };
 
 // Build a MongoTableEntry for a collection, running schema inference. Returns nullptr when the collection has no

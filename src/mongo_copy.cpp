@@ -33,11 +33,7 @@ void ResolveCopyTarget(ClientContext &context, const string &target, string &con
 	}
 
 	const string &alias = parts[0];
-#ifdef DUCKDB_MAIN_VECTOR_API
 	auto catalog_entry = Catalog::GetCatalogEntry(context, Identifier(alias));
-#else
-	auto catalog_entry = Catalog::GetCatalogEntry(context, alias);
-#endif
 	if (!catalog_entry) {
 		throw BinderException("COPY ... TO (FORMAT mongo): no attached database named \"%s\"", alias);
 	}
@@ -109,23 +105,14 @@ struct MongoCopyLocalState : public LocalFunctionData {
 //===--------------------------------------------------------------------===//
 // Copy callbacks
 //===--------------------------------------------------------------------===//
-#ifdef DUCKDB_MAIN_VECTOR_API
 unique_ptr<FunctionData> MongoCopyBind(ClientContext &context, CopyFunctionBindInput &input,
                                        const vector<Identifier> &names, const vector<LogicalType> &sql_types) {
-#else
-unique_ptr<FunctionData> MongoCopyBind(ClientContext &context, CopyFunctionBindInput &input,
-                                       const vector<string> &names, const vector<LogicalType> &sql_types) {
-#endif
 	auto result = make_uniq<MongoCopyBindData>();
 	ResolveCopyTarget(context, input.info.file_path, result->connection_string, result->database_name,
 	                  result->collection_name);
-#ifdef DUCKDB_MAIN_VECTOR_API
 	for (auto &n : names) {
 		result->column_names.push_back(n.GetIdentifierName());
 	}
-#else
-	result->column_names = names;
-#endif
 	result->column_types = sql_types;
 	result->batch_size = MongoResolveBatchSize();
 

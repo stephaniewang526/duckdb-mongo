@@ -1,12 +1,5 @@
 #include "mongo_table_function.hpp"
-#include "mongo_compat.hpp"
-#ifndef DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER
-#if __has_include("duckdb/main/extension_callback_manager.hpp")
-#define DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER 1
-#else
-#define DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER 0
-#endif
-#endif
+#include "mongo_duckdb_utils.hpp"
 #include "schema/mongo_schema_inference_internal.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -119,7 +112,7 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 						continue;
 					}
 					for (idx_t i = 0; i < StructType::GetChildCount(child); i++) {
-						auto &name = MongoStructChildName(child, i);
+						auto &name = StructType::GetChildName(child, i).GetIdentifierName();
 						if (merged.find(name) == merged.end()) {
 							merged[name] = StructType::GetChildType(child, i);
 						}
@@ -308,11 +301,7 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 }
 
 static LogicalType ParseLogicalTypeFromString(const std::string &type_str, ClientContext &context) {
-#if DUCKDB_HAS_EXTENSION_CALLBACK_MANAGER
 	return TransformStringToLogicalType(type_str, context);
-#else
-	return TransformStringToLogicalType(type_str);
-#endif
 }
 
 bool ParseSchemaFromAtlasDocument(ClientContext &context, mongocxx::collection &collection,
@@ -412,7 +401,7 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 	D_ASSERT(StructType::GetChildCount(child_type) == struct_children.size());
 
 	for (idx_t i = 0; i < struct_children.size(); i++) {
-		auto &name = MongoStructChildName(child_type, i);
+		auto &name = StructType::GetChildName(child_type, i).GetIdentifierName();
 		auto &val = struct_children[i];
 		if (val.IsNull()) {
 			throw BinderException("mongo_scan \"columns\" parameter type specification cannot be NULL.");
@@ -432,7 +421,7 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 			// Look for "type" field
 			bool found_type = false;
 			for (idx_t j = 0; j < nested_children.size(); j++) {
-				auto &nested_name = MongoStructChildName(nested_type, j);
+				auto &nested_name = StructType::GetChildName(nested_type, j).GetIdentifierName();
 				if (StringUtil::Lower(nested_name) == "type") {
 					auto &type_val = nested_children[j];
 					if (type_val.type().id() == LogicalTypeId::VARCHAR) {
@@ -449,7 +438,7 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 
 			// Look for "path" field (optional)
 			for (idx_t j = 0; j < nested_children.size(); j++) {
-				auto &nested_name = MongoStructChildName(nested_type, j);
+				auto &nested_name = StructType::GetChildName(nested_type, j).GetIdentifierName();
 				if (StringUtil::Lower(nested_name) == "path") {
 					auto &path_val = nested_children[j];
 					if (path_val.type().id() == LogicalTypeId::VARCHAR) {
@@ -1069,7 +1058,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 				// For unknown types, use a default representation
 				str_val = "<unknown type>";
 			}
-			MongoFlatVectorGetDataMutable<string_t>(output.data[col_idx])[row_idx] =
+			FlatVector::GetDataMutable<string_t>(output.data[col_idx])[row_idx] =
 			    StringVector::AddString(output.data[col_idx], str_val);
 			break;
 		}
@@ -1089,7 +1078,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 			} else if (element.type() == bsoncxx::type::k_double) {
 				int_val = static_cast<int64_t>(element.get_double().value);
 			}
-			MongoFlatVectorGetDataMutable<int64_t>(output.data[col_idx])[row_idx] = int_val;
+			FlatVector::GetDataMutable<int64_t>(output.data[col_idx])[row_idx] = int_val;
 			break;
 		}
 		case LogicalTypeId::HUGEINT: {
@@ -1118,7 +1107,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 					huge_val = 0;
 				}
 			}
-			MongoFlatVectorGetDataMutable<hugeint_t>(output.data[col_idx])[row_idx] = huge_val;
+			FlatVector::GetDataMutable<hugeint_t>(output.data[col_idx])[row_idx] = huge_val;
 			break;
 		}
 		case LogicalTypeId::DOUBLE: {
@@ -1144,7 +1133,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 					double_val = 0.0;
 				}
 			}
-			MongoFlatVectorGetDataMutable<double>(output.data[col_idx])[row_idx] = double_val;
+			FlatVector::GetDataMutable<double>(output.data[col_idx])[row_idx] = double_val;
 			break;
 		}
 		case LogicalTypeId::BOOLEAN: {
@@ -1159,7 +1148,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 			if (element.type() == bsoncxx::type::k_bool) {
 				bool_val = element.get_bool().value;
 			}
-			MongoFlatVectorGetDataMutable<bool>(output.data[col_idx])[row_idx] = bool_val;
+			FlatVector::GetDataMutable<bool>(output.data[col_idx])[row_idx] = bool_val;
 			break;
 		}
 		case LogicalTypeId::DATE: {
@@ -1180,7 +1169,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 			} else {
 				date_val = date_t(0);
 			}
-			MongoFlatVectorGetDataMutable<date_t>(output.data[col_idx])[row_idx] = date_val;
+			FlatVector::GetDataMutable<date_t>(output.data[col_idx])[row_idx] = date_val;
 			break;
 		}
 		case LogicalTypeId::TIMESTAMP: {
@@ -1198,7 +1187,7 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 			} else {
 				ts_val = Timestamp::FromEpochMs(0);
 			}
-			MongoFlatVectorGetDataMutable<timestamp_t>(output.data[col_idx])[row_idx] = ts_val;
+			FlatVector::GetDataMutable<timestamp_t>(output.data[col_idx])[row_idx] = ts_val;
 			break;
 		}
 		default: {

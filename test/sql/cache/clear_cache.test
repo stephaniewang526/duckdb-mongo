@@ -39,37 +39,39 @@ statement ok
 ATTACH 'host=localhost port=27017 database=duckdb_mongo_test' AS test_mongo (TYPE MONGO);
 
 # Query collections initially - this populates the collection cache
-# Count only tables in the specific schema to avoid dependencies on other attached databases
+# Count only tables in the specific schema to avoid dependencies on other attached databases.
+# Write tests (copy_*, ctas_*, write_*, insert_target, insert_dup, *_roundtrip) create and drop
+# their own collections and may run concurrently, so listings exclude them and only assert the stable fixture set.
 query I
 SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo'
-  AND table_schema = 'duckdb_mongo_test';
+  AND table_schema = 'duckdb_mongo_test'
+  AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-23
+20
 
 # Query collections again - should use cached data
 query I
 SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo'
-  AND table_schema = 'duckdb_mongo_test';
+  AND table_schema = 'duckdb_mongo_test'
+  AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-23
+20
 
 # Get list of collections (this uses cached collection names)
 query T
 SELECT table_name FROM information_schema.tables
 WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
+  AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$')
 ORDER BY table_name;
 ----
 case_variant_fields_test
-copy_target
 decimal_test
 deeply_nested
 empty_collection
-insert_dup
 insert_nested
-insert_target
 insert_typed
 matrix
 nested_scalars_test
@@ -98,25 +100,24 @@ SELECT * FROM mongo_clear_cache();
 query I
 SELECT COUNT(*) FROM information_schema.tables
 WHERE table_catalog = 'test_mongo'
-  AND table_schema = 'duckdb_mongo_test';
+  AND table_schema = 'duckdb_mongo_test'
+  AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-23
+20
 
 # Verify we get the same collections (proving fresh data was fetched, not stale cache)
 query T
 SELECT table_name FROM information_schema.tables
 WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
+  AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$')
 ORDER BY table_name;
 ----
 case_variant_fields_test
-copy_target
 decimal_test
 deeply_nested
 empty_collection
-insert_dup
 insert_nested
-insert_target
 insert_typed
 matrix
 nested_scalars_test

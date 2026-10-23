@@ -13,14 +13,20 @@ concurrency:
 
 jobs:
   duckdb-stable-build:
-    name: Build extension binaries (DuckDB v1.5.5 stable)
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5.5
+    name: Build extension binaries (DuckDB v2.0.0 stable)
+    # extension-ci-tools has no v2.0.0 tag yet. Pinned to the extension-ci-tools submodule commit on the
+    # v2.0-cyanoptera release branch; TODO: move to the v2.0.0 tag once it exists.
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@b8d325c37e82160886579880707493bd358c0e62
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      duckdb_version: v2.0.0
+      ci_tools_version: b8d325c37e82160886579880707493bd358c0e62
       extension_name: mongo
       exclude_archs: "wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;"
-      # Newer than extension-ci-tools default (84bab45): that baseline still has
+      # ci-tools v2.0 builds Intel macOS only on request
+      opt_in_archs: "osx_amd64"
+      # Pull requests would otherwise build only linux_amd64 and windows_amd64
+      reduced_ci_mode: disabled
+      # Newer than the extension-ci-tools default: that baseline still has
       # mongo-c-driver 1.30.6, which fails to configure on CMake 4.4 (macos-15),
       # and its msys2 package URLs 404. This commit ships mongo-c-driver 2.3.1#2
       # with upstream cmake-4.4.patch (CDRIVER-6367).
@@ -39,10 +45,10 @@ jobs:
 
   code-quality-check:
     name: Code Quality Check
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@v1.5.5
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_code_quality.yml@b8d325c37e82160886579880707493bd358c0e62
     with:
-      duckdb_version: v1.5.5
-      ci_tools_version: v1.5.5
+      duckdb_version: v2.0.0
+      ci_tools_version: b8d325c37e82160886579880707493bd358c0e62
       extension_name: mongo
       # Tidy check disabled because it requires MongoDB C++ driver (vcpkg dependency).
       format_checks: 'format'

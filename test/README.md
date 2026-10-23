@@ -74,17 +74,15 @@ In addition to SQL logic tests, this extension includes C++ integration tests fo
 
 ### Building Integration Tests
 
-Build integration tests using CMake:
+The integration test target is opt-in (it needs the `duckdb` submodule's Catch header, which is absent when the
+extension is fetched via `duckdb_extension_load`). Enable it through `EXT_FLAGS`:
 
 ```bash
-mkdir -p build/release
-cd build/release
-cmake -GNinja ../..
-ninja test_atlas_integration
-cd ../..
+EXT_FLAGS="-DMONGO_BUILD_ATLAS_INTEGRATION_TEST=ON" make release
 ```
 
-This builds the integration test executable in `build/release/extension/mongo/`. Note: `test_atlas_integration` is always built regardless of `ENABLE_UNITTEST_CPP_TESTS`.
+This builds the integration test executable in `build/release/extension/mongo/`. The option is cached, so later
+`make release` runs keep rebuilding it. `test/run-atlas-integration-test.sh` does this build step for you.
 
 ### Running Integration Tests
 

@@ -109,10 +109,20 @@ static bsoncxx::types::bson_value::value CellToBson(const Value &value, const Lo
 		auto &children = StructValue::GetChildren(value);
 		for (idx_t i = 0; i < children.size(); i++) {
 			sub.append(
-			    bsoncxx::builder::basic::kvp(MongoChildPairName(child_types[i]),
+			    bsoncxx::builder::basic::kvp(child_types[i].first.GetIdentifierName(),
 			                                 CellToBson(children[i], child_types[i].second, "", objectid_columns)));
 		}
 		return types::bson_value::value(sub.view());
+	}
+	case LogicalTypeId::TUPLE: {
+		// An unnamed struct such as (1, 'x') has positions, not keys, so it becomes an array
+		bsoncxx::builder::basic::array arr;
+		auto &child_types = StructType::GetChildTypes(type);
+		auto &children = StructValue::GetChildren(value);
+		for (idx_t i = 0; i < children.size(); i++) {
+			arr.append(CellToBson(children[i], child_types[i].second, "", objectid_columns));
+		}
+		return types::bson_value::value(arr.view());
 	}
 	default:
 		return types::bson_value::value(value.ToString());
@@ -131,16 +141,12 @@ static void AppendValueToDocument(bsoncxx::builder::basic::document &doc_builder
 MongoTableEntry::MongoTableEntry(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
                                  shared_ptr<MongoScanData> scan_data_p)
     : TableCatalogEntry(catalog, schema, info), scan_data(std::move(scan_data_p)) {
-#ifdef DUCKDB_MAIN_VECTOR_API
 	columns = std::move(info.columns);
-#endif
 }
 
-#ifdef DUCKDB_MAIN_VECTOR_API
 const ColumnList &MongoTableEntry::GetColumns() const {
 	return columns;
 }
-#endif
 
 unique_ptr<BaseStatistics> MongoTableEntry::GetStatistics(ClientContext &context, column_t column_id) {
 	return nullptr;
@@ -159,10 +165,6 @@ TableFunction MongoTableEntry::GetScanFunction(ClientContext &context, unique_pt
 	data->has_explicit_schema = scan_data->has_explicit_schema;
 	data->schema_mode = scan_data->schema_mode;
 	data->sample_size = scan_data->sample_size;
-	// is_base_table tells the complex-filter pushdown that column references are numbered by projected position (a
-	// base-table LogicalGet), so it remaps them to schema order. The aggregate / top-N / count rewrites in the MongoDB
-	// optimizer already resolve columns by name, so they need no change.
-	data->is_base_table = true;
 
 	GetMongoInstance();
 	data->connection = make_shared_ptr<MongoConnection>(data->connection_string);
@@ -211,17 +213,10 @@ unique_ptr<CatalogEntry> MongoCreateTableEntry(Catalog &catalog, SchemaCatalogEn
 		return nullptr;
 	}
 
-#ifdef DUCKDB_MAIN_VECTOR_API
 	CreateTableInfo info(schema, Identifier(collection_name));
 	for (idx_t i = 0; i < scan_data->column_names.size(); i++) {
 		info.columns.AddColumn(ColumnDefinition(Identifier(scan_data->column_names[i]), scan_data->column_types[i]));
 	}
-#else
-	CreateTableInfo info(schema, collection_name);
-	for (idx_t i = 0; i < scan_data->column_names.size(); i++) {
-		info.columns.AddColumn(ColumnDefinition(scan_data->column_names[i], scan_data->column_types[i]));
-	}
-#endif
 
 	return make_uniq_base<CatalogEntry, MongoTableEntry>(catalog, schema, info, std::move(scan_data));
 }
@@ -421,8 +416,7 @@ unique_ptr<GlobalSourceState> MongoInsertOperator::GetGlobalSourceState(ClientCo
 SourceResultType MongoInsertOperator::GetDataInternal(ExecutionContext &context, DataChunk &chunk,
                                                       OperatorSourceInput &input) const {
 	auto &gstate = sink_state->Cast<MongoInsertGlobalState>();
-	chunk.SetCardinality(1);
-	chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.insert_count)));
+	chunk.data[0].Append(Value::BIGINT(NumericCast<int64_t>(gstate.insert_count)));
 	return SourceResultType::FINISHED;
 }
 

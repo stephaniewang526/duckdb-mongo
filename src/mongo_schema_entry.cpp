@@ -1,6 +1,6 @@
 #include "mongo_schema_entry.hpp"
 #include "mongo_catalog.hpp"
-#include "mongo_compat.hpp"
+#include "mongo_duckdb_utils.hpp"
 #include "mongo_insert.hpp"
 #include "mongo_instance.hpp"
 #include "duckdb/catalog/catalog_entry/view_catalog_entry.hpp"
@@ -74,11 +74,7 @@ optional_ptr<CatalogEntry> MongoSchemaEntry::LookupEntry(CatalogTransaction tran
 	}
 
 	if (default_generator && transaction.context) {
-#ifdef DUCKDB_MAIN_VECTOR_API
 		auto default_entry = default_generator->CreateDefaultEntry(*transaction.context, Identifier(entry_name));
-#else
-		auto default_entry = default_generator->CreateDefaultEntry(*transaction.context, entry_name);
-#endif
 		if (default_entry) {
 			auto view_entry = dynamic_cast<ViewCatalogEntry *>(default_entry.get());
 			if (view_entry) {
@@ -106,7 +102,7 @@ void MongoSchemaEntry::SetConnectionInfo(const string &connection_string_p, cons
 optional_ptr<CatalogEntry> MongoSchemaEntry::CreateView(CatalogTransaction transaction, CreateViewInfo &info) {
 	lock_guard<mutex> lock(entry_lock);
 
-	auto view_name = MongoGetViewName(info);
+	auto view_name = info.GetViewName().GetIdentifierName();
 	auto it = views.find(view_name);
 	if (it != views.end()) {
 		if (info.on_conflict == OnCreateConflict::ERROR_ON_CONFLICT) {
@@ -189,11 +185,7 @@ void MongoSchemaEntry::TryLoadEntries(ClientContext &context) {
 	auto entries = default_generator->GetDefaultEntries();
 	collection_names.reserve(entries.size());
 	for (auto &e : entries) {
-#ifdef DUCKDB_MAIN_VECTOR_API
 		collection_names.push_back(e.GetIdentifierName());
-#else
-		collection_names.push_back(e);
-#endif
 	}
 
 	lock_guard<mutex> entry_guard(entry_lock);
@@ -225,11 +217,7 @@ shared_ptr<CatalogEntry> MongoSchemaEntry::GetOrCreateViewEntry(ClientContext &c
 
 	if (default_generator) {
 		try {
-#ifdef DUCKDB_MAIN_VECTOR_API
 			auto default_entry = default_generator->CreateDefaultEntry(context, Identifier(collection_name));
-#else
-			auto default_entry = default_generator->CreateDefaultEntry(context, collection_name);
-#endif
 			if (default_entry) {
 				auto view_entry = dynamic_cast<ViewCatalogEntry *>(default_entry.get());
 				if (view_entry) {
@@ -313,7 +301,7 @@ void MongoSchemaEntry::Scan(CatalogType type, const std::function<void(CatalogEn
 }
 
 void MongoSchemaEntry::DropEntry(ClientContext &context, DropInfo &info) {
-	auto drop_name = MongoGetDropName(info);
+	auto drop_name = info.GetQualifiedName().Name().GetIdentifierName();
 	if (info.type == CatalogType::VIEW_ENTRY) {
 		lock_guard<mutex> lock(entry_lock);
 		auto it = views.find(drop_name);

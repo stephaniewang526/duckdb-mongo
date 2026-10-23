@@ -4,7 +4,6 @@
 #include "duckdb/main/connection.hpp"
 #include "duckdb/main/config.hpp"
 #include "duckdb/main/query_result.hpp"
-#include "duckdb/main/materialized_query_result.hpp"
 #include "duckdb/common/types.hpp"
 #include "mongo_extension.hpp"
 #include <cstdlib>
@@ -14,7 +13,6 @@
 #include <iostream>
 
 // Helper function to print error and check query success
-// Template to work with both MaterializedQueryResult and QueryResult
 template <typename T>
 inline void check_query_result(const std::unique_ptr<T> &result, const std::string &query = "") {
 	if (result->HasError()) {
@@ -76,8 +74,9 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		std::cerr << "[TEST] ATTACH with secret (empty path) took " << duration << "ms" << std::endl;
 
 		// Verify attachment
-		auto result = con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db'");
-		REQUIRE(!result->HasError());
+		std::string query = "SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db'";
+		auto result = con.Query(query);
+		check_query_result(result, query);
 		REQUIRE(result->RowCount() == 1);
 	}
 
@@ -92,16 +91,18 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		std::cerr << "[TEST] ATTACH with secret and dbname parameter took " << duration << "ms" << std::endl;
 
 		// Verify attachment
-		auto result =
-		    con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_with_dbname'");
-		REQUIRE(!result->HasError());
+		std::string db_query =
+		    "SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_with_dbname'";
+		auto result = con.Query(db_query);
+		check_query_result(result, db_query);
 		REQUIRE(result->RowCount() == 1);
 
 		// Verify that the specified database name (smoketests) is available as a schema
-		auto schema_result =
-		    con.Query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db_with_dbname' "
-		              "AND schema_name = 'smoketests'");
-		REQUIRE(!schema_result->HasError());
+		std::string schema_query =
+		    "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db_with_dbname' "
+		    "AND schema_name = 'smoketests'";
+		auto schema_result = con.Query(schema_query);
+		check_query_result(schema_result, schema_query);
 		REQUIRE(schema_result->RowCount() == 1);
 
 		// Verify that we can query collections from the specified database
@@ -127,9 +128,9 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		std::cerr << "[TEST] ATTACH with secret and additional query options took " << duration << "ms" << std::endl;
 
 		// Verify attachment
-		auto result =
-		    con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_options'");
-		REQUIRE(!result->HasError());
+		std::string query = "SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_options'";
+		auto result = con.Query(query);
+		check_query_result(result, query);
 		REQUIRE(result->RowCount() == 1);
 
 		// Cleanup
@@ -144,22 +145,24 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		std::cerr << "[TEST] ATTACH with connection string took " << duration << "ms" << std::endl;
 
 		// Verify attachment
-		auto result = con.Query("SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_legacy'");
-		REQUIRE(!result->HasError());
+		std::string query = "SELECT database_name FROM duckdb_databases() WHERE database_name = 'atlas_db_legacy'";
+		auto result = con.Query(query);
+		check_query_result(result, query);
 		REQUIRE(result->RowCount() == 1);
 	}
 
 	SECTION("Verify expected schemas are present") {
 		REQUIRE_NO_FAIL(con.Query("ATTACH '' AS atlas_db (TYPE MONGO, SECRET 'atlas_secret')"));
 
+		std::string query = "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' "
+		                    "AND schema_name IN ('oa_smoke_test', 'smoketests') ORDER BY schema_name";
 		auto start = std::chrono::high_resolution_clock::now();
-		auto result = con.Query("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' "
-		                        "AND schema_name IN ('oa_smoke_test', 'smoketests') ORDER BY schema_name");
+		auto result = con.Query(query);
 		auto end = std::chrono::high_resolution_clock::now();
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Schema query took " << duration << "ms" << std::endl;
 
-		REQUIRE(!result->HasError());
+		check_query_result(result, query);
 		REQUIRE(result->RowCount() == 2);
 		auto chunk = result->Fetch();
 		std::set<std::string> schemas;
@@ -183,9 +186,10 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		REQUIRE(chunk->GetValue(1, 0).ToString() == "main");
 
 		// Check information_schema.schemata
-		auto schemas_result = con.Query(
-		    "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' ORDER BY schema_name");
-		REQUIRE(!schemas_result->HasError());
+		std::string schemas_query =
+		    "SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'atlas_db' ORDER BY schema_name";
+		auto schemas_result = con.Query(schemas_query);
+		check_query_result(schemas_result, schemas_query);
 		REQUIRE(schemas_result->RowCount() >= 3); // Should have at least "main", "oa_smoke_test", "smoketests"
 
 		std::set<std::string> info_schemas;
@@ -240,9 +244,11 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 		std::cerr << "[TEST] Query test collection took " << duration << "ms" << std::endl;
 		if (result->HasError()) {
+			std::cerr << "[WARN] Unqualified query failed, retrying fully qualified: " << result->GetError()
+			          << std::endl;
 			result = con.Query("SELECT * FROM atlas_db.\"smoketests\".\"test\" ORDER BY a");
 		}
-		REQUIRE(!result->HasError());
+		check_query_result(result, "SELECT * FROM test ORDER BY a");
 		REQUIRE(result->RowCount() == 2);
 
 		// Find column indices
@@ -250,7 +256,7 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		constexpr idx_t INVALID_COL = idx_t(-1);
 		idx_t a_col = INVALID_COL, b_col = INVALID_COL;
 		for (idx_t i = 0; i < result->ColumnCount(); i++) {
-			std::string col_name = result->ColumnName(i);
+			const std::string &col_name = result->ColumnName(i).GetIdentifierName();
 			if (col_name == "a") {
 				a_col = i;
 			} else if (col_name == "b") {
@@ -342,8 +348,9 @@ TEST_CASE("MongoDB Atlas Integration Test", "[mongo][atlas][integration]") {
 		duckdb::Connection cleanup_con(db);
 		auto detach_result = cleanup_con.Query("DETACH atlas_db");
 		if (!detach_result->HasError()) {
-			auto result = cleanup_con.Query("SELECT COUNT(*) FROM duckdb_databases() WHERE database_name = 'atlas_db'");
-			REQUIRE(!result->HasError());
+			std::string query = "SELECT COUNT(*) FROM duckdb_databases() WHERE database_name = 'atlas_db'";
+			auto result = cleanup_con.Query(query);
+			check_query_result(result, query);
 			auto chunk = result->Fetch();
 			REQUIRE(chunk->GetValue(0, 0).GetValue<int64_t>() == 0);
 		}

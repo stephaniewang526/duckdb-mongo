@@ -2,7 +2,7 @@
 
 #include "mongo_table_function.hpp"
 #include "mongo_filter_pushdown.hpp"
-#include "mongo_compat.hpp"
+#include "mongo_duckdb_utils.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/optimizer/optimizer.hpp"
@@ -33,7 +33,7 @@ struct BindingMapRule {
 };
 
 static bool IsMongoScan(const LogicalGet &get) {
-	return StringUtil::CIEquals(MONGO_FUNCTION_NAME(get.function), "mongo_scan") && get.bind_data &&
+	return StringUtil::CIEquals(get.function.GetName().GetIdentifierName(), "mongo_scan") && get.bind_data &&
 	       dynamic_cast<MongoScanData *>(get.bind_data.get());
 }
 
@@ -51,7 +51,7 @@ static void ApplyBindingRulesToExpression(unique_ptr<Expression> &expr, const ve
 	ExpressionIterator::VisitExpressionMutable<BoundColumnRefExpression>(expr, [&](BoundColumnRefExpression &colref,
 	                                                                               unique_ptr<Expression> &child) {
 		(void)child;
-		auto &binding = MongoColumnBindingMutable(colref);
+		auto &binding = colref.BindingMutable();
 		for (const auto &rule : rules) {
 			if (binding.table_index == rule.from_table_index) {
 				binding.table_index = rule.to_table_index;
@@ -117,6 +117,19 @@ static bool DocIsEmpty(const bsoncxx::document::view &v) {
 	return v.begin() == v.end();
 }
 
+// Filters on nested columns stay in DuckDB (MongoSupportsPushdownType), so they can't be folded into a pipeline.
+static bool HasNestedColumnFilter(LogicalGet &get, const MongoScanData &data) {
+	auto &col_ids = get.GetColumnIds();
+	bool found = false;
+	MongoForEachFilter(get.table_filters, [&](idx_t proj_idx, TableFilter &) {
+		if (proj_idx < col_ids.size()) {
+			idx_t schema_idx = col_ids[proj_idx].GetPrimaryIndex();
+			found |= schema_idx < data.column_types.size() && data.column_types[schema_idx].IsNested();
+		}
+	});
+	return found;
+}
+
 static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &get, const MongoScanData &data) {
 	vector<bsoncxx::document::value> conjuncts;
 
@@ -127,9 +140,7 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 
 	// TableFilterSet pushdown (simple comparisons).
 	if (MongoHasFilters(get.table_filters)) {
-#ifdef DUCKDB_MAIN_VECTOR_API
-		// DuckDB main: filters are keyed by ProjectionIndex (position within column_ids).
-		// Remap to schema column indices before converting to MongoDB query.
+		// Filters are keyed by ProjectionIndex (position within column_ids); remap to schema column indices.
 		auto remapped_filters = make_uniq<TableFilterSet>();
 		auto &col_ids = get.GetColumnIds();
 		auto filters_copy = get.table_filters.Copy();
@@ -140,11 +151,6 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 			}
 		});
 		auto *filters_to_use = remapped_filters.get();
-#else
-		// DuckDB v1.5.x: filters are already keyed by schema column index.
-		auto filters_copy = get.table_filters.Copy();
-		auto *filters_to_use = filters_copy.get();
-#endif
 		auto simple =
 		    ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>(filters_to_use), data.column_names,
 		                               data.column_types, data.column_name_to_mongo_path, data.objectid_columns);
@@ -181,7 +187,7 @@ static bool IsSimpleColumnRef(const Expression &expr, mongo_table_index_t expect
 		return false;
 	}
 	auto &colref = expr.Cast<BoundColumnRefExpression>();
-	const auto &binding = MongoColumnBinding(colref);
+	const auto &binding = colref.Binding();
 	if (binding.table_index != expected_table_index) {
 		return false;
 	}
@@ -194,7 +200,7 @@ static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalP
 	if (expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 		return false;
 	}
-	auto binding = MongoColumnBinding(expr.Cast<BoundColumnRefExpression>());
+	auto binding = expr.Cast<BoundColumnRefExpression>().Binding();
 	for (auto *proj : projections) {
 		if (!proj) {
 			continue;
@@ -209,7 +215,7 @@ static bool ResolveColumnRefToScan(const Expression &expr, const vector<LogicalP
 		if (proj_expr.GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
 			return false;
 		}
-		binding = MongoColumnBinding(proj_expr.Cast<BoundColumnRefExpression>());
+		binding = proj_expr.Cast<BoundColumnRefExpression>().Binding();
 	}
 	if (binding.table_index != scan_table_index) {
 		return false;
@@ -224,7 +230,7 @@ static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<
 	if (!ResolveColumnRefToScan(expr, projections, scan_table_index, out_col_idx)) {
 		return false;
 	}
-	const auto expr_name = MongoExprName(expr);
+	const auto expr_name = expr.GetName().GetIdentifierName();
 	if (out_col_idx < data.column_names.size() && StringUtil::CIEquals(data.column_names[out_col_idx], expr_name)) {
 		return true;
 	}
@@ -252,28 +258,69 @@ static bool ResolveColumnRefToScanWithName(const Expression &expr, const vector<
 
 static bool GetOrderColumnName(const Expression &expr, string &name) {
 	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
-		name = MongoExprName(expr);
+		name = expr.GetName().GetIdentifierName();
 		return true;
 	}
-	if (MongoIsCastExpr(expr)) {
-		auto *cast_child = MongoCastChild(expr);
-		if (cast_child) {
-			return GetOrderColumnName(*cast_child, name);
-		}
+	if (BoundCastExpression::IsCast(expr)) {
+		return GetOrderColumnName(BoundCastExpression::Child(expr.Cast<BoundFunctionExpression>()), name);
 	}
 	return false;
+}
+
+// BSON $type aliases that scan to a non-NULL value of this column type (mirrors IsBSONTypeCompatible).
+// Empty means COUNT(col) is not pushed down.
+static vector<string> CountableBSONTypes(LogicalTypeId type) {
+	switch (type) {
+	case LogicalTypeId::VARCHAR:
+		return {"double",
+		        "string",
+		        "object",
+		        "array",
+		        "binData",
+		        "objectId",
+		        "bool",
+		        "date",
+		        "regex",
+		        "dbPointer",
+		        "javascript",
+		        "symbol",
+		        "javascriptWithScope",
+		        "int",
+		        "timestamp",
+		        "long",
+		        "decimal",
+		        "undefined",
+		        "minKey",
+		        "maxKey"};
+	case LogicalTypeId::BIGINT:
+		return {"int", "long", "double"};
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::DOUBLE:
+		return {"int", "long", "double", "decimal"};
+	case LogicalTypeId::BOOLEAN:
+		return {"bool"};
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+		return {"date"};
+	case LogicalTypeId::STRUCT:
+		return {"object"};
+	case LogicalTypeId::LIST:
+		return {"array"};
+	default:
+		return {};
+	}
 }
 
 static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const LogicalGet &get,
                                  const vector<LogicalProjection *> &projections, const MongoScanData &data,
                                  idx_t &out_child_col, string &out_kind) {
 	// No DISTINCT/FILTER/ORDER BY in MVP
-	if (aggr.IsDistinct() || MongoAggregateFilter(aggr) || MongoAggregateOrderBys(aggr)) {
+	if (aggr.IsDistinct() || aggr.GetFilter() || aggr.GetOrderBys()) {
 		return false;
 	}
 
-	const auto &children = MongoAggregateChildren(aggr);
-	auto fname = StringUtil::Lower(MONGO_FUNCTION_NAME(MongoAggregateFunction(aggr)));
+	const auto &children = aggr.GetChildren();
+	auto fname = StringUtil::Lower(aggr.Function().GetName().GetIdentifierName());
 	if (fname == "count_star") {
 		out_kind = "count_star";
 		out_child_col = DConstants::INVALID_INDEX;
@@ -368,7 +415,7 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 		return false;
 	}
 	auto bind = GetMongoBindData(get);
-	if (!bind) {
+	if (!bind || HasNestedColumnFilter(get, *bind)) {
 		return false;
 	}
 
@@ -480,7 +527,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		return false;
 	}
 	auto bind = GetMongoBindData(get);
-	if (!bind) {
+	if (!bind || HasNestedColumnFilter(get, *bind)) {
 		return false;
 	}
 
@@ -507,7 +554,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 			return false;
 		}
 		group_fields.emplace_back(col_name, it->second);
-		group_types.push_back(MONGO_EXPR_RETURN_TYPE(*gexpr));
+		group_types.push_back(gexpr->GetReturnType());
 	}
 
 	// Aggregate expressions must be supported and direct
@@ -556,29 +603,32 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 				spec.append(bsoncxx::builder::basic::kvp("$sum", 1));
 				out_types.push_back(LogicalType::BIGINT);
 			} else if (kind == "count") {
-				// COUNT(col): sum(cond(col != null))
+				// COUNT(col): sum(cond($type(col) in countable types))
 				auto col_name = bind->column_names[child_col];
 				auto path_it = bind->column_name_to_mongo_path.find(col_name);
 				if (path_it == bind->column_name_to_mongo_path.end()) {
 					return false;
 				}
-				// {$sum: {$cond: [{$ne: [{$ifNull: ["$col", null]}, null]}, 1, 0]}}
-				// In aggregation expressions a missing field is not equal to null, so
-				// a bare {$ne: ["$col", null]} would count documents without the field.
-				// $ifNull maps missing (and null) to null first.
-				bsoncxx::builder::basic::document if_null;
-				bsoncxx::builder::basic::array if_null_args;
-				if_null_args.append(StringUtil::Format("$%s", path_it->second));
-				if_null_args.append(bsoncxx::types::b_null {});
-				if_null.append(bsoncxx::builder::basic::kvp("$ifNull", if_null_args));
-				bsoncxx::builder::basic::document ne;
-				bsoncxx::builder::basic::array ne_args;
-				ne_args.append(if_null.extract());
-				ne_args.append(bsoncxx::types::b_null {});
-				ne.append(bsoncxx::builder::basic::kvp("$ne", ne_args));
+				// DuckDB counts a value only if it converts to the column type: PERMISSIVE turns other BSON types
+				// into NULL (IsBSONTypeCompatible). $type also reports a missing field as "missing", not "null".
+				auto bson_types = CountableBSONTypes(bind->column_types[child_col].id());
+				if (bson_types.empty()) {
+					return false;
+				}
+				bsoncxx::builder::basic::document type_of;
+				type_of.append(bsoncxx::builder::basic::kvp("$type", StringUtil::Format("$%s", path_it->second)));
+				bsoncxx::builder::basic::array type_names;
+				for (auto &name : bson_types) {
+					type_names.append(name);
+				}
+				bsoncxx::builder::basic::array in_args;
+				in_args.append(type_of.extract());
+				in_args.append(type_names.extract());
+				bsoncxx::builder::basic::document is_countable;
+				is_countable.append(bsoncxx::builder::basic::kvp("$in", in_args.extract()));
 				bsoncxx::builder::basic::document cond;
 				bsoncxx::builder::basic::array cond_args;
-				cond_args.append(ne.extract());
+				cond_args.append(is_countable.extract());
 				cond_args.append(1);
 				cond_args.append(0);
 				cond.append(bsoncxx::builder::basic::kvp("$cond", cond_args));
@@ -593,7 +643,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 				spec.append(bsoncxx::builder::basic::kvp(StringUtil::Format("$%s", kind),
 				                                         StringUtil::Format("$%s", path_it->second)));
 				// Preserve DuckDB aggregate return type
-				out_types.push_back(MONGO_EXPR_RETURN_TYPE(b));
+				out_types.push_back(b.GetReturnType());
 			}
 
 			agg_specs.emplace_back(out_field, spec.extract());
@@ -625,7 +675,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 
 	// Create a new LogicalGet with table_index = group_index to preserve group bindings.
 	auto replacement = make_uniq<LogicalGet>(aggr.group_index, get.function, std::move(new_bind), out_types,
-	                                         MongoMakeColumnNames(out_names));
+	                                         MongoToIdentifiers(out_names));
 	replacement->named_parameters = get.named_parameters;
 	replacement->named_parameters["pipeline"] = Value(pipeline_json);
 	replacement->parameters = get.parameters;

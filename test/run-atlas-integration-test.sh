@@ -23,30 +23,18 @@ echo "MongoDB Atlas credentials found."
 echo "Username: $MONGO_ATLAS_USERNAME"
 echo ""
 
-# Check if the test executable exists
 TEST_EXECUTABLE="./build/release/extension/mongo/test_atlas_integration"
 
+# Always build so the test binary matches the current sources and DuckDB submodule.
+# The target is opt-in (see CMakeLists.txt); the build is incremental.
+echo "Building the extension with the integration test enabled..."
+echo ""
+EXT_FLAGS="${EXT_FLAGS:-} -DMONGO_BUILD_ATLAS_INTEGRATION_TEST=ON" make release
+
 if [ ! -f "$TEST_EXECUTABLE" ]; then
-    echo "Test executable not found at: $TEST_EXECUTABLE"
     echo ""
-    echo "Building the extension with integration tests enabled..."
-    echo ""
-
-    # Build with C++ unit tests enabled using CMake directly
-    # The extension Makefile hardcodes ENABLE_UNITTEST_CPP_TESTS=FALSE
-    # so we need to use CMake directly to enable it
-    mkdir -p build/release
-    cd build/release
-    cmake -DENABLE_UNITTEST_CPP_TESTS=TRUE -GNinja ../..
-    ninja test_atlas_integration
-    cd ../..
-
-    if [ ! -f "$TEST_EXECUTABLE" ]; then
-        echo ""
-        echo "Error: Failed to build integration test executable."
-        echo "Please check the build output above for errors."
-        exit 1
-    fi
+    echo "Error: Failed to build integration test executable at: $TEST_EXECUTABLE"
+    exit 1
 fi
 
 echo "Running MongoDB Atlas integration test..."
