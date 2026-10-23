@@ -3,8 +3,10 @@
 #include "mongo_filter_pushdown.hpp"
 #include "mongo_expr_pushdown.hpp"
 #include "mongo_duckdb_utils.hpp"
+#include "mongo_query_log.hpp"
 #include "mongo_secrets.hpp"
 #include "mongo_catalog.hpp"
+#include "duckdb/logging/logger.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
@@ -379,6 +381,12 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 			pipeline.append_stage(it->get_document().value);
 		}
 
+		{
+			bsoncxx::builder::basic::document body;
+			body.append(bsoncxx::builder::basic::kvp("pipeline", stages));
+			DUCKDB_LOG(context, MongoQueryLogType, data.database_name, data.collection_name, "aggregate", body.view());
+		}
+
 		mongocxx::options::aggregate agg_opts;
 		result->cursor = make_uniq<mongocxx::cursor>(collection.aggregate(pipeline, agg_opts));
 		result->current = make_uniq<mongocxx::cursor::iterator>(result->cursor->begin());
@@ -496,6 +504,16 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 				}
 			}
 		}
+	}
+
+	{
+		bsoncxx::builder::basic::document body;
+		body.append(bsoncxx::builder::basic::kvp("filter", query_filter.view()));
+		body.append(bsoncxx::builder::basic::kvp("projection", result->projection_document.view()));
+		if (result->limit > 0) {
+			body.append(bsoncxx::builder::basic::kvp("limit", result->limit));
+		}
+		DUCKDB_LOG(context, MongoQueryLogType, data.database_name, data.collection_name, "find", body.view());
 	}
 
 	// Create cursor with query filter and options (including projection if set)
