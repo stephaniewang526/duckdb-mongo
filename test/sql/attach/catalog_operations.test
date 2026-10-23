@@ -27,17 +27,19 @@ USE memory.main;
 statement ok
 USE mongo_db.duckdb_mongo_test;
 
-# Write tests (copy/ctas/insert/write_*) create and drop their own collections and may run
-# concurrently with this test, so listings exclude them and only assert the stable fixture set.
+# Write tests (copy_*, ctas_*, write_*, insert_target, insert_dup, *_roundtrip) create and drop
+# their own collections and may run concurrently with this test, so listings exclude them and only assert the stable fixture set.
 query I
 SELECT name FROM (SHOW TABLES)
-WHERE NOT regexp_matches(name, '^(copy|ctas|insert|write)_|^oid_roundtrip$')
+WHERE NOT regexp_matches(name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$')
 ORDER BY name;
 ----
 case_variant_fields_test
 decimal_test
 deeply_nested
 empty_collection
+insert_nested
+insert_typed
 matrix
 nested_scalars_test
 object_container_test
@@ -62,7 +64,7 @@ CREATE TABLE test_memory_table (id INTEGER, name VARCHAR);
 
 query III
 SELECT database, schema, name FROM (SHOW ALL TABLES)
-WHERE NOT regexp_matches(name, '^(copy|ctas|insert|write)_|^oid_roundtrip$')
+WHERE NOT regexp_matches(name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$')
 ORDER BY database, name;
 ----
 memory	main	test_memory_table
@@ -70,6 +72,8 @@ mongo_db	duckdb_mongo_test	case_variant_fields_test
 mongo_db	duckdb_mongo_test	decimal_test
 mongo_db	duckdb_mongo_test	deeply_nested
 mongo_db	duckdb_mongo_test	empty_collection
+mongo_db	duckdb_mongo_test	insert_nested
+mongo_db	duckdb_mongo_test	insert_typed
 mongo_db	duckdb_mongo_test	matrix
 mongo_db	duckdb_mongo_test	nested_scalars_test
 mongo_db	duckdb_mongo_test	object_container_test
@@ -136,9 +140,9 @@ users
 query I
 SELECT COUNT(*) FROM duckdb_views()
 WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test'
-  AND NOT regexp_matches(view_name, '^(copy|ctas|insert|write)_|^oid_roundtrip$');
+  AND NOT regexp_matches(view_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-18
+20
 
 query I
 SELECT column_name FROM duckdb_columns() 

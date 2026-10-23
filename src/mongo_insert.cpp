@@ -114,6 +114,16 @@ static bsoncxx::types::bson_value::value CellToBson(const Value &value, const Lo
 		}
 		return types::bson_value::value(sub.view());
 	}
+	case LogicalTypeId::TUPLE: {
+		// An unnamed struct such as (1, 'x') has positions, not keys, so it becomes an array
+		bsoncxx::builder::basic::array arr;
+		auto &child_types = StructType::GetChildTypes(type);
+		auto &children = StructValue::GetChildren(value);
+		for (idx_t i = 0; i < children.size(); i++) {
+			arr.append(CellToBson(children[i], child_types[i].second, "", objectid_columns));
+		}
+		return types::bson_value::value(arr.view());
+	}
 	default:
 		return types::bson_value::value(value.ToString());
 	}
@@ -155,10 +165,6 @@ TableFunction MongoTableEntry::GetScanFunction(ClientContext &context, unique_pt
 	data->has_explicit_schema = scan_data->has_explicit_schema;
 	data->schema_mode = scan_data->schema_mode;
 	data->sample_size = scan_data->sample_size;
-	// is_base_table tells the complex-filter pushdown that column references are numbered by projected position (a
-	// base-table LogicalGet), so it remaps them to schema order. The aggregate / top-N / count rewrites in the MongoDB
-	// optimizer already resolve columns by name, so they need no change.
-	data->is_base_table = true;
 
 	GetMongoInstance();
 	data->connection = make_shared_ptr<MongoConnection>(data->connection_string);

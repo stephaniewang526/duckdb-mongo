@@ -9,7 +9,7 @@ duckdb_extension_load(mongo
 # Load TPC-H extension for benchmarking
 duckdb_extension_load(tpch)
 
-# DuckDB main only links the extensions listed with duckdb_extension_statically_link into the CLI (v1.5 links every
+# DuckDB 2.0 and main only link the extensions listed with duckdb_extension_statically_link into the CLI (v1.5 links every
 # loaded one). test/create-tpch-test-db.sh runs LOAD tpch in the build's CLI.
 if(COMMAND duckdb_extension_statically_link)
     duckdb_extension_statically_link(tpch)

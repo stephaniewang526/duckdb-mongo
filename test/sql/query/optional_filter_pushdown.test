@@ -1,0 +1,72 @@
+# name: test/sql/query/optional_filter_pushdown.test
+# description: DuckDB 2.0 filter shapes: optional IN/OR/temporal filters, struct field filters, same-column ANDs
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+# Non-dense IN lists arrive as optional filters and are pushed as $in
+query T
+SELECT name FROM mongo_test.users WHERE age IN (25, 35) ORDER BY name;
+----
+Bob
+Charlie
+
+# $in on _id converts each value to an ObjectId
+query T
+SELECT name FROM mongo_test.users WHERE _id IN ('507f1f77bcf86cd799439011', '507f1f77bcf86cd799439013') ORDER BY name;
+----
+Alice
+Charlie
+
+# Same-column OR chains arrive as optional filters and are pushed as $or
+query T
+SELECT name FROM mongo_test.users WHERE name = 'Alice' OR name = 'Diana' ORDER BY name;
+----
+Alice
+Diana
+
+# An equality and an IN on the same column must both hold (used to merge into {name: {name: ...}})
+query T
+SELECT name FROM mongo_test.users WHERE name = 'Alice' AND name IN ('Alice', 'Bob');
+----
+Alice
+
+query T
+SELECT name FROM mongo_test.users WHERE age >= 25 AND age IN (28, 30, 99) ORDER BY name;
+----
+Alice
+Diana
+
+# CAST(timestamp AS DATE) comparisons arrive as relaxed optional bounds on the timestamp
+query T
+SELECT name FROM mongo_test.users WHERE CAST(created_at AS DATE) = DATE '2023-02-01';
+----
+Bob
+
+# A struct field filter is keyed on the parent column; it must not be matched against the whole subdocument
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'address': 'STRUCT(city VARCHAR)'})
+WHERE address.city = 'New York';
+----
+Alice
+
+# ...including when the aggregate would otherwise be pushed into a pipeline
+query I
+SELECT COUNT(*) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'address': 'STRUCT(city VARCHAR)'})
+WHERE address.city = 'Chicago';
+----
+1
+
+query T
+SELECT name FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'address': 'STRUCT(city VARCHAR)'})
+WHERE address.city IN ('Chicago', 'Houston') ORDER BY age DESC LIMIT 1;
+----
+Charlie

@@ -13,8 +13,7 @@ namespace duckdb {
 
 // Scan filters are always ExpressionFilter; TableFilter itself has no Copy().
 inline unique_ptr<TableFilter> MongoCopyFilter(const TableFilter &filter) {
-	auto &ef = static_cast<const ExpressionFilter &>(filter);
-	return ef.Copy();
+	return ExpressionFilter::GetExpressionFilter(filter, "MongoCopyFilter").Copy();
 }
 
 // Declare a table function's optional named parameters as typed kwargs.

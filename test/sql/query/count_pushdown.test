@@ -56,17 +56,31 @@ SELECT COUNT(name) FROM mongo_test.users;
 4
 
 # COUNT(col) must skip documents where the field is missing, not only null.
-# In aggregation expressions a missing field is not equal to null, so the
-# pipeline wraps the field in $ifNull. Only ORD-004 has 'notes'.
+# The pipeline counts by $type, which reports a missing field as "missing". Only ORD-004 has 'notes'.
 query II
 EXPLAIN SELECT COUNT(notes) FROM mongo_test.orders;
 ----
-physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*\$ifNull[\s\S]*
+physical_plan	<REGEX>:[\s\S]*(MONGO_SCAN|Mongo Scan)[\s\S]*\$type[\s\S]*
 
 query I
 SELECT COUNT(notes) FROM mongo_test.orders;
 ----
 1
+
+# A value of another BSON type scans as NULL in PERMISSIVE mode, so COUNT(col) must not count it.
+# type_conflicts.value holds 'string', 789 and false; only 789 is a BIGINT.
+query I
+SELECT COUNT(value) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'});
+----
+1
+
+# DuckDB 2.0 rewrites an ungrouped AVG into SUM / COUNT, which goes through the same COUNT(col) pipeline
+query R
+SELECT AVG(value) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts',
+    columns := {'id': 'VARCHAR', 'value': 'BIGINT'});
+----
+789.0
 
 query II
 SELECT status, COUNT(notes) FROM mongo_test.orders GROUP BY status ORDER BY status;

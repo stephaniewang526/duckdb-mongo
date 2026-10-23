@@ -40,5 +40,18 @@ SELECT _id, n, label FROM m.duckdb_mongo_test.oid_roundtrip WHERE label = 'test_
 statement ok
 DROP TABLE m.duckdb_mongo_test.oid_roundtrip;
 
+# An unnamed struct (a TUPLE in DuckDB 2.0) is written as an array, not as the string "(7, 8)"
+statement ok
+CREATE TABLE m.duckdb_mongo_test.tuple_roundtrip AS
+SELECT 1 AS _id, (7, 8) AS pair;
+
+query I
+SELECT pair[1] + pair[2] FROM m.duckdb_mongo_test.tuple_roundtrip;
+----
+15
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.tuple_roundtrip;
+
 statement ok
 DETACH m;

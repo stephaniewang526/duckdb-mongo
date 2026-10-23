@@ -117,6 +117,19 @@ static bool DocIsEmpty(const bsoncxx::document::view &v) {
 	return v.begin() == v.end();
 }
 
+// Filters on nested columns stay in DuckDB (MongoSupportsPushdownType), so they can't be folded into a pipeline.
+static bool HasNestedColumnFilter(LogicalGet &get, const MongoScanData &data) {
+	auto &col_ids = get.GetColumnIds();
+	bool found = false;
+	MongoForEachFilter(get.table_filters, [&](idx_t proj_idx, TableFilter &) {
+		if (proj_idx < col_ids.size()) {
+			idx_t schema_idx = col_ids[proj_idx].GetPrimaryIndex();
+			found |= schema_idx < data.column_types.size() && data.column_types[schema_idx].IsNested();
+		}
+	});
+	return found;
+}
+
 static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &get, const MongoScanData &data) {
 	vector<bsoncxx::document::value> conjuncts;
 
@@ -254,6 +267,50 @@ static bool GetOrderColumnName(const Expression &expr, string &name) {
 	return false;
 }
 
+// BSON $type aliases that scan to a non-NULL value of this column type (mirrors IsBSONTypeCompatible).
+// Empty means COUNT(col) is not pushed down.
+static vector<string> CountableBSONTypes(LogicalTypeId type) {
+	switch (type) {
+	case LogicalTypeId::VARCHAR:
+		return {"double",
+		        "string",
+		        "object",
+		        "array",
+		        "binData",
+		        "objectId",
+		        "bool",
+		        "date",
+		        "regex",
+		        "dbPointer",
+		        "javascript",
+		        "symbol",
+		        "javascriptWithScope",
+		        "int",
+		        "timestamp",
+		        "long",
+		        "decimal",
+		        "undefined",
+		        "minKey",
+		        "maxKey"};
+	case LogicalTypeId::BIGINT:
+		return {"int", "long", "double"};
+	case LogicalTypeId::HUGEINT:
+	case LogicalTypeId::DOUBLE:
+		return {"int", "long", "double", "decimal"};
+	case LogicalTypeId::BOOLEAN:
+		return {"bool"};
+	case LogicalTypeId::DATE:
+	case LogicalTypeId::TIMESTAMP:
+		return {"date"};
+	case LogicalTypeId::STRUCT:
+		return {"object"};
+	case LogicalTypeId::LIST:
+		return {"array"};
+	default:
+		return {};
+	}
+}
+
 static bool IsSupportedAggregate(const BoundAggregateExpression &aggr, const LogicalGet &get,
                                  const vector<LogicalProjection *> &projections, const MongoScanData &data,
                                  idx_t &out_child_col, string &out_kind) {
@@ -358,7 +415,7 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 		return false;
 	}
 	auto bind = GetMongoBindData(get);
-	if (!bind) {
+	if (!bind || HasNestedColumnFilter(get, *bind)) {
 		return false;
 	}
 
@@ -470,7 +527,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		return false;
 	}
 	auto bind = GetMongoBindData(get);
-	if (!bind) {
+	if (!bind || HasNestedColumnFilter(get, *bind)) {
 		return false;
 	}
 
@@ -546,29 +603,32 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 				spec.append(bsoncxx::builder::basic::kvp("$sum", 1));
 				out_types.push_back(LogicalType::BIGINT);
 			} else if (kind == "count") {
-				// COUNT(col): sum(cond(col != null))
+				// COUNT(col): sum(cond($type(col) in countable types))
 				auto col_name = bind->column_names[child_col];
 				auto path_it = bind->column_name_to_mongo_path.find(col_name);
 				if (path_it == bind->column_name_to_mongo_path.end()) {
 					return false;
 				}
-				// {$sum: {$cond: [{$ne: [{$ifNull: ["$col", null]}, null]}, 1, 0]}}
-				// In aggregation expressions a missing field is not equal to null, so
-				// a bare {$ne: ["$col", null]} would count documents without the field.
-				// $ifNull maps missing (and null) to null first.
-				bsoncxx::builder::basic::document if_null;
-				bsoncxx::builder::basic::array if_null_args;
-				if_null_args.append(StringUtil::Format("$%s", path_it->second));
-				if_null_args.append(bsoncxx::types::b_null {});
-				if_null.append(bsoncxx::builder::basic::kvp("$ifNull", if_null_args));
-				bsoncxx::builder::basic::document ne;
-				bsoncxx::builder::basic::array ne_args;
-				ne_args.append(if_null.extract());
-				ne_args.append(bsoncxx::types::b_null {});
-				ne.append(bsoncxx::builder::basic::kvp("$ne", ne_args));
+				// DuckDB counts a value only if it converts to the column type: PERMISSIVE turns other BSON types
+				// into NULL (IsBSONTypeCompatible). $type also reports a missing field as "missing", not "null".
+				auto bson_types = CountableBSONTypes(bind->column_types[child_col].id());
+				if (bson_types.empty()) {
+					return false;
+				}
+				bsoncxx::builder::basic::document type_of;
+				type_of.append(bsoncxx::builder::basic::kvp("$type", StringUtil::Format("$%s", path_it->second)));
+				bsoncxx::builder::basic::array type_names;
+				for (auto &name : bson_types) {
+					type_names.append(name);
+				}
+				bsoncxx::builder::basic::array in_args;
+				in_args.append(type_of.extract());
+				in_args.append(type_names.extract());
+				bsoncxx::builder::basic::document is_countable;
+				is_countable.append(bsoncxx::builder::basic::kvp("$in", in_args.extract()));
 				bsoncxx::builder::basic::document cond;
 				bsoncxx::builder::basic::array cond_args;
-				cond_args.append(ne.extract());
+				cond_args.append(is_countable.extract());
 				cond_args.append(1);
 				cond_args.append(0);
 				cond.append(bsoncxx::builder::basic::kvp("$cond", cond_args));

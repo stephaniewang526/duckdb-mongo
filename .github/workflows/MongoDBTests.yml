@@ -145,8 +145,10 @@ jobs:
         PASSED=$(echo "$SUMMARY" | sed -n 's/.*ran tests: \([0-9]*\) passed.*/\1/p')
         FAILED=$(echo "$SUMMARY" | sed -n 's/.*, \([0-9]*\) failed.*/\1/p')
         SKIPPED=$(echo "$SUMMARY" | sed -n 's/.*, \([0-9]*\) skipped.*/\1/p')
+        PARTIAL=$(echo "$SUMMARY" | sed -n 's/.*(\([0-9]*\) partially).*/\1/p')
         FAILED=${FAILED:-0}
         SKIPPED=${SKIPPED:-0}
+        PARTIAL=${PARTIAL:-0}
         if [ "$FAILED" -ne "0" ]; then
           echo "ERROR: $FAILED test(s) failed!"
           exit 1
@@ -156,9 +158,23 @@ jobs:
           grep -A5 "Skipped tests" test.log || true
           exit 1
         fi
-        if [ "$PASSED" -lt "13" ]; then
-          echo "ERROR: Expected at least 13 tests to run, but only $PASSED ran!"
+        if [ "$PARTIAL" -ne "0" ]; then
+          echo "ERROR: $PARTIAL test(s) were partially skipped!"
+          grep -A5 "Partially skipped tests" test.log || true
+          exit 1
+        fi
+        EXPECTED=$(find test -name '*.test' | wc -l)
+        if [ "$PASSED" -ne "$EXPECTED" ]; then
+          echo "ERROR: Expected $EXPECTED tests to pass, but $PASSED did!"
           exit 1
         fi
         echo "All $PASSED tests executed successfully (no skips)"
 
+    # The Atlas integration test needs a live Atlas cluster, so CI only checks that it still compiles
+    - name: Compile Atlas integration test
+      env:
+        GEN: ninja
+        VCPKG_TOOLCHAIN_PATH: ${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+        CMAKE_MAKE_PROGRAM: /usr/bin/ninja
+        EXT_FLAGS: -DMONGO_BUILD_ATLAS_INTEGRATION_TEST=ON
+      run: make release

@@ -100,154 +100,103 @@ static void AppendValueToDocument(bsoncxx::builder::basic::document &doc_builder
 	}
 }
 
-// Build a comparison MongoDB filter document from a comparison type and constant value.
-static bsoncxx::document::value BuildComparisonFilterDoc(ExpressionType cmp_type, const Value &constant,
-                                                         const string &column_name, const LogicalType &column_type,
-                                                         const unordered_set<string> &objectid_columns) {
-	bsoncxx::builder::basic::document doc;
-	string mongo_op;
+static const char *MongoComparisonOperator(ExpressionType cmp_type) {
 	switch (cmp_type) {
 	case ExpressionType::COMPARE_EQUAL:
-		AppendValueToDocument(doc, column_name, constant, column_type, column_name, objectid_columns);
-		break;
+		return "$eq";
 	case ExpressionType::COMPARE_NOTEQUAL:
-		mongo_op = "$ne";
-		break;
+		return "$ne";
 	case ExpressionType::COMPARE_LESSTHAN:
-		mongo_op = "$lt";
-		break;
+		return "$lt";
 	case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-		mongo_op = "$lte";
-		break;
+		return "$lte";
 	case ExpressionType::COMPARE_GREATERTHAN:
-		mongo_op = "$gt";
-		break;
+		return "$gt";
 	case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-		mongo_op = "$gte";
-		break;
+		return "$gte";
 	default:
-		return doc.extract();
+		return nullptr;
 	}
-	if (!mongo_op.empty()) {
-		bsoncxx::builder::basic::document op_doc;
-		AppendValueToDocument(op_doc, mongo_op, constant, column_type, column_name, objectid_columns);
-		doc.append(bsoncxx::builder::basic::kvp(column_name, op_doc.extract()));
-	}
-	return doc.extract();
 }
 
-static bsoncxx::document::value ConvertSingleFilterToMongo(const TableFilter &filter, const string &column_name,
-                                                           const LogicalType &column_type,
-                                                           const unordered_set<string> &objectid_columns) {
+// Every column term is {column: {$op: value}} so that terms on the same column can sit side by side in an $and.
+// Returns an empty document when the expression can't be translated.
+static bsoncxx::document::value ConvertExpressionToMongo(const Expression &expr, const string &column_name,
+                                                         const LogicalType &column_type,
+                                                         const unordered_set<string> &objectid_columns) {
 	bsoncxx::builder::basic::document doc;
 
-	switch (filter.filter_type) {
-	case TableFilterType::EXPRESSION_FILTER: {
-		// All scan filters are wrapped in ExpressionFilter.
-		const auto &expr_filter = filter.Cast<ExpressionFilter>();
-		if (!expr_filter.expr) {
-			break;
-		}
-		// Skip optional/dynamic expression wrappers — we cannot guarantee their value at planning time.
-		if (ExpressionFilter::IsOptionalFilter(filter)) {
-			break;
-		}
-		auto &inner_expr = *expr_filter.expr;
-		// Handle comparison expressions (e.g., col = 5, col > 10). Comparisons are BoundFunctionExpression;
-		// use the BoundComparisonExpression static helpers.
-		if (BoundComparisonExpression::IsComparison(inner_expr)) {
-			auto &cmp = inner_expr.Cast<BoundFunctionExpression>();
-			const Expression *const_side = nullptr;
-			ExpressionType cmp_type = inner_expr.GetExpressionType();
-			const Expression &right = BoundComparisonExpression::Right(cmp);
-			const Expression &left = BoundComparisonExpression::Left(cmp);
-			if (right.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
-				const_side = &right;
-			} else if (left.GetExpressionClass() == ExpressionClass::BOUND_CONSTANT) {
-				const_side = &left;
-				switch (cmp_type) {
-				case ExpressionType::COMPARE_LESSTHAN:
-					cmp_type = ExpressionType::COMPARE_GREATERTHAN;
-					break;
-				case ExpressionType::COMPARE_LESSTHANOREQUALTO:
-					cmp_type = ExpressionType::COMPARE_GREATERTHANOREQUALTO;
-					break;
-				case ExpressionType::COMPARE_GREATERTHAN:
-					cmp_type = ExpressionType::COMPARE_LESSTHAN;
-					break;
-				case ExpressionType::COMPARE_GREATERTHANOREQUALTO:
-					cmp_type = ExpressionType::COMPARE_LESSTHANOREQUALTO;
-					break;
-				default:
-					break;
-				}
-			}
-			if (const_side) {
-				auto &const_expr = const_side->Cast<BoundConstantExpression>();
-				return BuildComparisonFilterDoc(cmp_type, const_expr.GetValue(), column_name, column_type,
-				                                objectid_columns);
-			}
-		}
-		// Handle conjunction expressions (AND / OR).
-		if (inner_expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION) {
-			auto &conj = inner_expr.Cast<BoundConjunctionExpression>();
-			if (conj.GetExpressionType() == ExpressionType::CONJUNCTION_AND) {
-				bsoncxx::builder::basic::document merged_doc;
-				for (auto &child : conj.GetChildren()) {
-					ExpressionFilter child_ef(child->Copy());
-					auto child_doc = ConvertSingleFilterToMongo(child_ef, column_name, column_type, objectid_columns);
-					auto child_view = child_doc.view();
-					for (auto it = child_view.begin(); it != child_view.end(); ++it) {
-						if (it->key() == column_name && it->type() == bsoncxx::type::k_document) {
-							for (auto nested = it->get_document().value.begin();
-							     nested != it->get_document().value.end(); ++nested) {
-								merged_doc.append(bsoncxx::builder::basic::kvp(
-								    nested->key(), bsoncxx::types::bson_value::value(nested->get_value())));
-							}
-						} else {
-							merged_doc.append(bsoncxx::builder::basic::kvp(
-							    it->key(), bsoncxx::types::bson_value::value(it->get_value())));
-						}
-					}
-				}
-				doc.append(bsoncxx::builder::basic::kvp(column_name, merged_doc.extract()));
-				return doc.extract();
-			}
-			if (conj.GetExpressionType() == ExpressionType::CONJUNCTION_OR) {
-				bsoncxx::builder::basic::array or_array;
-				for (auto &child : conj.GetChildren()) {
-					ExpressionFilter child_ef(child->Copy());
-					auto child_doc = ConvertSingleFilterToMongo(child_ef, column_name, column_type, objectid_columns);
-					if (!child_doc.view().empty()) {
-						or_array.append(child_doc.view());
-					}
-				}
-				if (!or_array.view().empty()) {
-					doc.append(bsoncxx::builder::basic::kvp("$or", or_array.extract()));
-				}
-				return doc.extract();
-			}
-		}
-		// Handle IS NULL / IS NOT NULL operator expressions.
-		if (inner_expr.GetExpressionClass() == ExpressionClass::BOUND_OPERATOR) {
-			auto &op_expr = inner_expr.Cast<BoundOperatorExpression>();
-			if (op_expr.GetExpressionType() == ExpressionType::OPERATOR_IS_NULL) {
-				doc.append(bsoncxx::builder::basic::kvp(column_name, bsoncxx::types::b_null {}));
-				return doc.extract();
-			}
-			if (op_expr.GetExpressionType() == ExpressionType::OPERATOR_IS_NOT_NULL) {
-				bsoncxx::builder::basic::document ne_doc;
-				ne_doc.append(bsoncxx::builder::basic::kvp("$ne", bsoncxx::types::b_null {}));
-				doc.append(bsoncxx::builder::basic::kvp(column_name, ne_doc.extract()));
-				return doc.extract();
-			}
-		}
-		break;
-	}
-	default:
-		break;
+	// Optional filters (non-dense IN lists, OR chains, relaxed temporal casts) are also kept in DuckDB, so their
+	// child is pushed as-is. Dynamic, bloom and prefix children don't translate and are left out.
+	auto optional_child = ExpressionFilter::GetOptionalFilterChild(expr);
+	if (optional_child) {
+		return ConvertExpressionToMongo(*optional_child, column_name, column_type, objectid_columns);
 	}
 
+	if (BoundComparisonExpression::IsComparison(expr)) {
+		// Only `column op constant`: DuckDB 2.0 also pushes `struct_extract(column, ...) op constant` on the parent
+		// column, which must not be matched against the whole column.
+		ExpressionType cmp_type;
+		auto constant =
+		    ExpressionFilter::TryGetColumnConstantComparison(expr.Cast<BoundFunctionExpression>(), cmp_type);
+		auto mongo_op = MongoComparisonOperator(cmp_type);
+		if (constant && mongo_op) {
+			bsoncxx::builder::basic::document op_doc;
+			AppendValueToDocument(op_doc, mongo_op, constant->GetValue(), column_type, column_name, objectid_columns);
+			doc.append(bsoncxx::builder::basic::kvp(column_name, op_doc.extract()));
+		}
+		return doc.extract();
+	}
+
+	if (expr.GetExpressionType() == ExpressionType::COMPARE_IN) {
+		auto &children = expr.Cast<BoundOperatorExpression>().GetChildren();
+		if (children.empty() || !ExpressionFilter::IsSimpleFilterColumnRef(*children[0])) {
+			return doc.extract();
+		}
+		bsoncxx::builder::basic::array values;
+		for (idx_t i = 1; i < children.size(); i++) {
+			if (children[i]->GetExpressionClass() != ExpressionClass::BOUND_CONSTANT) {
+				return doc.extract();
+			}
+			bsoncxx::builder::basic::document value_doc;
+			AppendValueToDocument(value_doc, "v", children[i]->Cast<BoundConstantExpression>().GetValue(), column_type,
+			                      column_name, objectid_columns);
+			values.append(bsoncxx::types::bson_value::value(value_doc.view()["v"].get_value()));
+		}
+		bsoncxx::builder::basic::document in_doc;
+		in_doc.append(bsoncxx::builder::basic::kvp("$in", values.extract()));
+		doc.append(bsoncxx::builder::basic::kvp(column_name, in_doc.extract()));
+		return doc.extract();
+	}
+
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_CONJUNCTION) {
+		bool is_and = expr.GetExpressionType() == ExpressionType::CONJUNCTION_AND;
+		bsoncxx::builder::basic::array terms;
+		for (auto &child : expr.Cast<BoundConjunctionExpression>().GetChildren()) {
+			auto child_doc = ConvertExpressionToMongo(*child, column_name, column_type, objectid_columns);
+			if (child_doc.view().empty()) {
+				// Leaving out an AND term widens the match; leaving out an OR term would lose rows.
+				if (is_and) {
+					continue;
+				}
+				return doc.extract();
+			}
+			terms.append(child_doc.view());
+		}
+		if (!terms.view().empty()) {
+			doc.append(bsoncxx::builder::basic::kvp(string(is_and ? "$and" : "$or"), terms.extract()));
+		}
+		return doc.extract();
+	}
+
+	if (expr.GetExpressionType() == ExpressionType::OPERATOR_IS_NULL ||
+	    expr.GetExpressionType() == ExpressionType::OPERATOR_IS_NOT_NULL) {
+		bsoncxx::builder::basic::document op_doc;
+		op_doc.append(bsoncxx::builder::basic::kvp(
+		    string(expr.GetExpressionType() == ExpressionType::OPERATOR_IS_NULL ? "$eq" : "$ne"),
+		    bsoncxx::types::b_null {}));
+		doc.append(bsoncxx::builder::basic::kvp(column_name, op_doc.extract()));
+	}
 	return doc.extract();
 }
 
@@ -262,92 +211,26 @@ bsoncxx::document::value ConvertFiltersToMongoQuery(optional_ptr<TableFilterSet>
 		return bsoncxx::builder::basic::document {}.extract();
 	}
 
-	// Keep track of column filters to merge if needed
-	unordered_map<string, bsoncxx::builder::basic::document> column_filters;
-	vector<bsoncxx::document::value> global_filters;
-
-	// Process each filter
-	MongoForEachFilter(*filters, [&](idx_t col_idx, TableFilter &filter_ref) {
-		if (col_idx >= column_names.size()) {
+	vector<bsoncxx::document::value> conjuncts;
+	MongoForEachFilter(*filters, [&](idx_t col_idx, TableFilter &filter) {
+		if (col_idx >= column_names.size() || filter.filter_type != TableFilterType::EXPRESSION_FILTER) {
+			return;
+		}
+		auto &expr_filter = filter.Cast<ExpressionFilter>();
+		if (!expr_filter.expr) {
 			return;
 		}
 
 		const string &column_name = column_names[col_idx];
-		const auto &column_type = column_types[col_idx];
-
-		// Handle nested field paths for MongoDB
-		string mongo_column_name = column_name;
 		auto path_it = column_name_to_mongo_path.find(column_name);
-		if (path_it != column_name_to_mongo_path.end()) {
-			mongo_column_name = path_it->second;
-		}
+		const string &mongo_column_name = path_it != column_name_to_mongo_path.end() ? path_it->second : column_name;
 
-		auto filter_doc = ConvertSingleFilterToMongo(filter_ref, mongo_column_name, column_type, objectid_columns);
-
-		// Skip empty filters
-		if (filter_doc.view().empty()) {
-			return;
-		}
-
-		auto filter_view = filter_doc.view();
-		auto filter_it = filter_view.begin();
-		if (filter_it != filter_view.end() && !filter_it->key().empty() && filter_it->key().front() == '$') {
-			global_filters.push_back(std::move(filter_doc));
-			return;
-		}
-
-		// Merge filters for the same column if needed
-		auto it = column_filters.find(mongo_column_name);
-		if (it == column_filters.end()) {
-			column_filters[mongo_column_name] = bsoncxx::builder::basic::document {};
-			auto &doc = column_filters[mongo_column_name];
-			for (auto filter_it = filter_doc.view().begin(); filter_it != filter_doc.view().end(); ++filter_it) {
-				doc.append(bsoncxx::builder::basic::kvp(filter_it->key(),
-				                                        bsoncxx::types::bson_value::value(filter_it->get_value())));
-			}
-		} else {
-			auto filter_view = filter_doc.view();
-			for (auto elem_it = filter_view.begin(); elem_it != filter_view.end(); ++elem_it) {
-				if (elem_it->key() == mongo_column_name && elem_it->type() == bsoncxx::type::k_document) {
-					auto nested_doc = elem_it->get_document().value;
-					for (auto nested_it = nested_doc.begin(); nested_it != nested_doc.end(); ++nested_it) {
-						it->second.append(bsoncxx::builder::basic::kvp(
-						    nested_it->key(), bsoncxx::types::bson_value::value(nested_it->get_value())));
-					}
-				} else {
-					it->second.append(bsoncxx::builder::basic::kvp(
-					    elem_it->key(), bsoncxx::types::bson_value::value(elem_it->get_value())));
-				}
-			}
+		auto filter_doc =
+		    ConvertExpressionToMongo(*expr_filter.expr, mongo_column_name, column_types[col_idx], objectid_columns);
+		if (!filter_doc.view().empty()) {
+			conjuncts.push_back(std::move(filter_doc));
 		}
 	});
-
-	vector<bsoncxx::document::value> conjuncts;
-
-	// Add column filters to query
-	for (auto &col_filter_pair : column_filters) {
-		auto col_doc = col_filter_pair.second.extract();
-		auto col_doc_view = col_doc.view();
-		auto it = col_doc_view.begin();
-		if (it != col_doc_view.end() && it->key() == col_filter_pair.first) {
-			auto next_it = it;
-			++next_it;
-			if (next_it == col_doc_view.end()) {
-				bsoncxx::builder::basic::document single_filter;
-				single_filter.append(
-				    bsoncxx::builder::basic::kvp(it->key(), bsoncxx::types::bson_value::value(it->get_value())));
-				conjuncts.push_back(single_filter.extract());
-				continue;
-			}
-		}
-		bsoncxx::builder::basic::document merged_filter;
-		merged_filter.append(bsoncxx::builder::basic::kvp(col_filter_pair.first, col_doc));
-		conjuncts.push_back(merged_filter.extract());
-	}
-
-	for (auto &global_filter : global_filters) {
-		conjuncts.push_back(std::move(global_filter));
-	}
 
 	if (conjuncts.empty()) {
 		return bsoncxx::builder::basic::document {}.extract();

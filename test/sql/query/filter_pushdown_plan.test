@@ -39,6 +39,12 @@ EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(name) > 5;
 ----
 physical_plan	<REGEX>:.*(MONGO_SCAN|Mongo Scan).*Projections: name.*
 
+# The filter itself must reach MongoDB as $expr
+query II
+EXPLAIN SELECT name FROM mongo_test.users WHERE LENGTH(name) > 5;
+----
+physical_plan	<REGEX>:[\s\S]*expr[\s\S]*\$strLenCP[\s\S]*
+
 # Complex filter with column-to-column comparison should be pushed down
 # Expected: MONGO_SCAN appears directly (no FILTER operator above it)
 query II
@@ -127,3 +133,12 @@ Diana	diana@example.com
 
 statement ok
 DETACH mongo_test;
+
+# On mongo_scan() too, $expr column references are numbered by projected position, not schema position.
+# Here name is schema column 0 but the second projected column.
+query I
+SELECT age FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT'})
+WHERE LENGTH(name) = 3;
+----
+25

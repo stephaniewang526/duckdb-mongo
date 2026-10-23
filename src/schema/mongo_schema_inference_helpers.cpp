@@ -224,6 +224,10 @@ LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
 		MongoChildListAppend(struct_children, pair.first, resolved_type);
 	}
 
+	// A subdocument whose keys are all "" would become a TUPLE in DuckDB 2.0, which the scan does not read
+	if (StructType::AllUnnamed(struct_children)) {
+		return LogicalType::VARCHAR;
+	}
 	return LogicalType::STRUCT(struct_children);
 }
 

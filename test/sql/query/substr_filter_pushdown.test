@@ -10,7 +10,7 @@ statement ok
 ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
 
 # DuckDB v1.5.x pushes substring(...) = const as Mongo $expr/$substrCP.
-# DuckDB main rewrites prefix-equality into a range filter that is also pushed down.
+# DuckDB 2.0 and main rewrite prefix-equality into a range filter that is also pushed down.
 query II
 EXPLAIN SELECT name FROM mongo_test.users WHERE substring(name, 1, 1) = 'A';
 ----
