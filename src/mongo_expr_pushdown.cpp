@@ -6,6 +6,7 @@
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
+#include "duckdb/function/scalar/struct_utils.hpp"
 #include "duckdb/optimizer/column_lifetime_analyzer.hpp"
 #include "duckdb/planner/expression/bound_cast_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -414,6 +415,70 @@ static bool ConvertExpressionToMongoExpr(const Expression &expr, const vector<st
 	return false;
 }
 
+// Resolves `struct_extract(...(column, 'a'), 'b')` to the dotted path "column.a.b". Plain column references resolve
+// too, so an OR can mix struct fields with top-level columns; `saw_struct_field` tells the caller whether any struct
+// field was involved. Only leaves of a pushable type resolve, so the translation stays exact.
+static bool ResolveStructFieldPath(const Expression &expr, const LogicalGet &get, const MongoScanData &data,
+                                   const vector<string> &effective_column_names, string &path, bool &saw_struct_field) {
+	if (expr.GetExpressionClass() == ExpressionClass::BOUND_COLUMN_REF) {
+		auto &col_ref = expr.Cast<BoundColumnRefExpression>();
+		if (col_ref.Binding().table_index != get.table_index) {
+			return false;
+		}
+		string mongo_path = GetMongoPathForColumn(col_ref, effective_column_names, data.column_name_to_mongo_path);
+		if (mongo_path.size() < 2) {
+			return false;
+		}
+		path = mongo_path.substr(1); // drop the "$" prefix used by $expr paths
+		return true;
+	}
+	if (expr.GetExpressionClass() != ExpressionClass::BOUND_FUNCTION) {
+		return false;
+	}
+	auto &func = expr.Cast<BoundFunctionExpression>();
+	auto &name = func.Function().GetName();
+	if ((name != "struct_extract" && name != "struct_extract_at") || func.GetChildren().empty() || !func.BindInfo()) {
+		return false;
+	}
+	auto &child = *func.GetChildren()[0];
+	if (child.GetReturnType().id() != LogicalTypeId::STRUCT || StructType::IsUnnamed(child.GetReturnType())) {
+		return false;
+	}
+	auto &field_name =
+	    StructType::GetChildName(child.GetReturnType(), func.BindInfo()->Cast<StructExtractBindData>().index)
+	        .GetIdentifierName();
+	// Dots and a leading "$" have path semantics in MongoDB.
+	if (field_name.empty() || field_name[0] == '$' || field_name.find('.') != string::npos) {
+		return false;
+	}
+	string parent;
+	if (!ResolveStructFieldPath(child, get, data, effective_column_names, parent, saw_struct_field)) {
+		return false;
+	}
+	saw_struct_field = true;
+	path = parent + "." + field_name;
+	return true;
+}
+
+// Struct field predicates are pushed from here rather than as table filters: DuckDB keys them on the parent column,
+// whose nested type MongoSupportsPushdownType rejects so that predicates we cannot translate (whole-struct equality,
+// list-typed fields) stay in DuckDB. Here we see the whole expression and only consume exact translations.
+static bool TryPushdownStructFieldPredicate(const Expression &expr, const LogicalGet &get, const MongoScanData &data,
+                                            const vector<string> &effective_column_names,
+                                            vector<bsoncxx::document::value> &match_terms) {
+	bool saw_struct_field = false;
+	MongoFieldPathResolver resolve = [&](const Expression &leaf, string &path) {
+		return MongoCanPushdownFilterType(leaf.GetReturnType()) &&
+		       ResolveStructFieldPath(leaf, get, data, effective_column_names, path, saw_struct_field);
+	};
+	auto translation = TranslatePredicateToMongo(expr, resolve, data.objectid_columns);
+	if (!saw_struct_field || !translation.complete || translation.doc.view().empty()) {
+		return false;
+	}
+	match_terms.push_back(std::move(translation.doc));
+	return true;
+}
+
 } // namespace
 
 // Main complex filter pushdown function
@@ -439,6 +504,7 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 	// Build MongoDB $expr document for complex filters
 	bsoncxx::builder::basic::document expr_builder;
 	bool has_complex_filter = false;
+	vector<bsoncxx::document::value> match_terms;
 
 	// Process each filter expression
 	for (auto it = filters.begin(); it != filters.end();) {
@@ -449,6 +515,11 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 		// will be handled by TableFilter conversion anyway
 		if (IsSimpleColumnToConstantComparison(*filter_expr)) {
 			++it;
+			continue;
+		}
+
+		if (TryPushdownStructFieldPredicate(*filter_expr, get, mongo_data, effective_column_names, match_terms)) {
+			it = filters.erase(it);
 			continue;
 		}
 
@@ -488,6 +559,10 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 	// Store complex filter expression in bind data
 	if (has_complex_filter) {
 		mongo_data.complex_filter_expr = expr_builder.extract();
+	}
+	if (!match_terms.empty()) {
+		match_terms.push_back(std::move(mongo_data.match_filter));
+		mongo_data.match_filter = MongoAndDocuments(std::move(match_terms));
 	}
 }
 

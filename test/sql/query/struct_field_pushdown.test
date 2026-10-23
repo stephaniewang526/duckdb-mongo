@@ -1,0 +1,135 @@
+# name: test/sql/query/struct_field_pushdown.test
+# description: Struct field predicates are pushed as dotted paths; untranslatable ones stay in DuckDB
+# group: [query]
+
+require mongo
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+statement ok
+CREATE MACRO users_struct() AS TABLE
+SELECT * FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'age': 'BIGINT', 'tags': 'VARCHAR[]',
+                'address': 'STRUCT(street VARCHAR, city VARCHAR, zip VARCHAR, missing VARCHAR)'});
+
+query T
+SELECT name FROM users_struct() WHERE address.city = 'New York';
+----
+Alice
+
+query T
+SELECT name FROM users_struct() WHERE 'Chicago' = address.city;
+----
+Charlie
+
+query T
+SELECT name FROM users_struct() WHERE address.city <> 'New York' ORDER BY name;
+----
+Bob
+Charlie
+Diana
+
+query T
+SELECT name FROM users_struct() WHERE address.city IN ('Chicago', 'Houston') ORDER BY name;
+----
+Charlie
+Diana
+
+query T
+SELECT name FROM users_struct() WHERE address.zip BETWEEN '10000' AND '70000' ORDER BY name;
+----
+Alice
+Charlie
+
+query T
+SELECT name FROM users_struct() WHERE address.city = 'Houston' OR age = 25 ORDER BY name;
+----
+Bob
+Diana
+
+query T
+SELECT name FROM users_struct() WHERE address.city = 'Chicago' AND age > 30 AND length(name) > 2;
+----
+Charlie
+
+# A field absent from every document is NULL on both sides
+query I
+SELECT count(*) FROM users_struct() WHERE address.missing IS NULL;
+----
+4
+
+query I
+SELECT count(*) FROM users_struct() WHERE address.missing IS NOT NULL;
+----
+0
+
+query I
+SELECT count(*) FROM users_struct() WHERE address.missing <> 'x';
+----
+0
+
+# Predicates with no dotted-path equivalent stay in DuckDB
+query T
+SELECT name FROM users_struct() WHERE address = {'street': '123 Main St', 'city': 'New York', 'zip': '10001', 'missing': NULL};
+----
+Alice
+
+query T
+SELECT name FROM users_struct() WHERE tags = ['user'] ORDER BY name;
+----
+Bob
+Diana
+
+query T
+SELECT name FROM users_struct() WHERE address.city LIKE '%York';
+----
+Alice
+
+# Aggregates and TopN still push down alongside struct field predicates
+query I
+SELECT count(*) FROM users_struct() WHERE address.city <> 'New York';
+----
+3
+
+query T
+SELECT name FROM users_struct() WHERE address.city IN ('Chicago', 'Houston') ORDER BY age DESC LIMIT 1;
+----
+Charlie
+
+# --- <> and NOT IN never return rows whose field is null or missing ---
+
+statement ok
+DROP TABLE IF EXISTS m.duckdb_mongo_test.null_filter_roundtrip;
+
+statement ok
+CREATE TABLE m.duckdb_mongo_test.null_filter_roundtrip AS
+SELECT * FROM (VALUES (1, 'x', 1.5::DOUBLE), (2, 'y', 2.5::DOUBLE), (3, NULL, NULL)) AS t(_id, v, f);
+
+query I
+SELECT _id FROM m.duckdb_mongo_test.null_filter_roundtrip WHERE v <> 'x';
+----
+2
+
+query I
+SELECT _id FROM m.duckdb_mongo_test.null_filter_roundtrip WHERE v IS NULL;
+----
+3
+
+query I
+SELECT _id FROM m.duckdb_mongo_test.null_filter_roundtrip WHERE f <> 1.5;
+----
+2
+
+query I
+SELECT _id FROM m.duckdb_mongo_test.null_filter_roundtrip WHERE v <> 'x' AND f > 1;
+----
+2
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.null_filter_roundtrip;
+
+statement ok
+DETACH m;

@@ -118,14 +118,16 @@ static bool DocIsEmpty(const bsoncxx::document::view &v) {
 	return v.begin() == v.end();
 }
 
-// Filters on nested columns stay in DuckDB (MongoSupportsPushdownType), so they can't be folded into a pipeline.
-static bool HasNestedColumnFilter(LogicalGet &get, const MongoScanData &data) {
+// At this point get.table_filters still holds filters DuckDB will take back and evaluate itself at physical
+// planning (MongoSupportsPushdownType); those can't be folded into a pipeline.
+static bool HasFilterDuckDBEvaluates(LogicalGet &get, const MongoScanData &data) {
 	auto &col_ids = get.GetColumnIds();
 	bool found = false;
 	MongoForEachFilter(get.table_filters, [&](idx_t proj_idx, TableFilter &) {
 		if (proj_idx < col_ids.size()) {
 			idx_t schema_idx = col_ids[proj_idx].GetPrimaryIndex();
-			found |= schema_idx < data.column_types.size() && data.column_types[schema_idx].IsNested();
+			found |=
+			    schema_idx < data.column_types.size() && !MongoCanPushdownFilterType(data.column_types[schema_idx]);
 		}
 	});
 	return found;
@@ -160,27 +162,16 @@ static bsoncxx::document::value BuildMatchFromExistingFilters(const LogicalGet &
 		}
 	}
 
-	// Complex filter pushdown stored in bind data
+	// Struct field predicates and $expr collected by pushdown_complex_filter
+	if (!data.match_filter.view().empty()) {
+		conjuncts.push_back(bsoncxx::document::value(data.match_filter.view()));
+	}
 	if (!data.complex_filter_expr.view().empty()) {
 		bsoncxx::builder::basic::document expr_doc;
 		expr_doc.append(bsoncxx::builder::basic::kvp("$expr", data.complex_filter_expr.view()));
 		conjuncts.push_back(expr_doc.extract());
 	}
-
-	if (conjuncts.empty()) {
-		return bsoncxx::builder::basic::document {}.extract();
-	}
-	if (conjuncts.size() == 1) {
-		return std::move(conjuncts[0]);
-	}
-
-	bsoncxx::builder::basic::array and_terms;
-	for (auto &c : conjuncts) {
-		and_terms.append(c.view());
-	}
-	bsoncxx::builder::basic::document match;
-	match.append(bsoncxx::builder::basic::kvp("$and", and_terms));
-	return match.extract();
+	return MongoAndDocuments(std::move(conjuncts));
 }
 
 static bool IsSimpleColumnRef(const Expression &expr, mongo_table_index_t expected_table_index, idx_t &out_col_idx) {
@@ -382,7 +373,7 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 		return false;
 	}
 	auto bind = GetMongoBindData(get);
-	if (!bind || HasNestedColumnFilter(get, *bind)) {
+	if (!bind || HasFilterDuckDBEvaluates(get, *bind)) {
 		return false;
 	}
 
@@ -494,7 +485,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		return false;
 	}
 	auto bind = GetMongoBindData(get);
-	if (!bind || HasNestedColumnFilter(get, *bind)) {
+	if (!bind || HasFilterDuckDBEvaluates(get, *bind)) {
 		return false;
 	}
 
