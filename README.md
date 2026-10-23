@@ -841,12 +841,23 @@ For aggregations, filters are pushed down while aggregation happens in DuckDB:
 
 **Supported Filter Operations:**
 
-- **Comparison operators**: `=`, `!=`, `<`, `<=`, `>`, `>=`
+- **Comparison operators**: `=`, `!=`, `<`, `<=`, `>`, `>=`, `BETWEEN` (`!=` becomes `{$nin: [value, null]}` so that, as in SQL, rows whose field is null or missing are not returned)
 - **IN clauses**: `WHERE status IN ('active', 'pending')` → MongoDB `{status: {$in: ['active', 'pending']}}`
 - **NULL checks**: `IS NULL` and `IS NOT NULL`
 - **Multiple conditions**: AND/OR combinations merged into efficient MongoDB queries
-- **Nested fields**: Flattened fields (e.g., `address_city`) converted to dot notation (`address.city`)
+- **Nested fields**: Flattened fields (e.g., `address_city`) converted to dot notation (`address.city`); struct fields of `STRUCT` columns declared via `columns :=` (e.g., `address.city` with `'address': 'STRUCT(city VARCHAR)'`) are pushed the same way
 - **Complex filters**: Function calls (e.g., `LENGTH(name) > 5`) and column-to-column comparisons (e.g., `age > balance`) pushed down as MongoDB `$expr` queries (see [Complex Filter Pushdown](#complex-filter-pushdown))
+
+Filters on columns whose type has no faithful MongoDB encoding (lists, whole structs, JSON, UUID, HUGEINT, ...) are evaluated by DuckDB after the scan.
+
+To see the exact commands a scan sends, enable the `MongoQuery` log type:
+
+```sql
+CALL enable_logging('MongoQuery');
+SELECT name FROM mongo_test.duckdb_mongo_test.users WHERE age IN (25, 35);
+SELECT message FROM duckdb_logs WHERE type = 'MongoQuery';
+-- { "database" : "duckdb_mongo_test", "collection" : "users", "find" : { "filter" : { "age" : { "$in" : [ 25, 35 ] } }, "projection" : { "name" : 1, "_id" : 1 } } }
+```
 
 **Examples:**
 
@@ -868,7 +879,7 @@ SELECT * FROM mongo_test.duckdb_mongo_test.users WHERE address_city = 'New York'
 -- MongoDB: {'address.city': 'New York'}
 ```
 
-> **Note:** When using `mongo_scan` directly, you can provide an optional `filter` parameter (e.g., `filter := '{"status": "active"}'`) for MongoDB-specific operators. If both WHERE clauses and `filter` are present, WHERE clauses take precedence.
+> **Note:** When using `mongo_scan` directly, you can provide an optional `filter` parameter (e.g., `filter := '{"status": "active"}'`) for MongoDB-specific operators. If both WHERE clauses and `filter` are present, both apply (they are combined with `$and`).
 
 > **Note:** Filters on array elements (using `UNNEST`) are **not** pushed down to MongoDB—they are applied in DuckDB after expanding arrays. This means **all documents** are fetched from MongoDB, then filtered in DuckDB. For large collections, consider using MongoDB's `$elemMatch` operator via the `filter` parameter in `mongo_scan` to filter at the database level. See [Basic Queries](#basic-queries) for array filtering examples.
 
