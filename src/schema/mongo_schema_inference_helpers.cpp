@@ -577,6 +577,12 @@ const vector<bsoncxx::type> &CompatibleBSONTypes(LogicalTypeId expected_type) {
 	                                 type::k_date,   type::k_regex,      type::k_dbpointer, type::k_code,
 	                                 type::k_symbol, type::k_codewscope, type::k_int32,     type::k_timestamp,
 	                                 type::k_int64,  type::k_decimal128, type::k_minkey,    type::k_maxkey};
+	// VARIANT reads undefined as NULL, unlike the VARCHAR path
+	static const vector<type> any_but_undefined = {
+	    type::k_double, type::k_string,     type::k_document,   type::k_array, type::k_binary,
+	    type::k_oid,    type::k_bool,       type::k_date,       type::k_regex, type::k_dbpointer,
+	    type::k_code,   type::k_symbol,     type::k_codewscope, type::k_int32, type::k_timestamp,
+	    type::k_int64,  type::k_decimal128, type::k_minkey,     type::k_maxkey};
 	static const vector<type> integers = {type::k_int32, type::k_int64, type::k_double};
 	static const vector<type> numerics = {type::k_int32, type::k_int64, type::k_double, type::k_decimal128};
 	static const vector<type> booleans = {type::k_bool};
@@ -586,6 +592,8 @@ const vector<bsoncxx::type> &CompatibleBSONTypes(LogicalTypeId expected_type) {
 	switch (expected_type) {
 	case LogicalTypeId::VARCHAR:
 		return any;
+	case LogicalTypeId::VARIANT:
+		return any_but_undefined;
 	case LogicalTypeId::BIGINT:
 		return integers;
 	case LogicalTypeId::HUGEINT:

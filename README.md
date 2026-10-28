@@ -57,6 +57,7 @@ SELECT * FROM atlas_db.mydb.mycollection;
 - **Flexible schema handling**: User-provided schemas, `__schema` document support (Atlas SQL compatibility), or automatic inference
 - Nested document flattening with underscore-separated names
 - **BSON type mapping** including Decimal128, arrays, and nested documents (see [BSON Type Mapping](#bson-type-mapping))
+- **VARIANT columns** that keep the BSON type of every value for heterogeneous or deeply nested fields (see [VARIANT Columns](#variant-columns))
 - **Query pushdown** to reduce data transfer (see [Pushdown Strategy](#pushdown-strategy)):
   - Filters (WHERE clauses, complex expressions, semi-join IN)
   - Projections (SELECT columns)
@@ -500,6 +501,7 @@ DROP TABLE IF EXISTS m.duckdb_mongo_test.my_collection;
 | `Document` | `VARCHAR` | Nested documents stored as JSON string |
 | `Null`, `Undefined` | `VARCHAR` | Type refined from other documents during inference |
 | `Regex`, `Code`, `Symbol`, `Timestamp`, `MinKey`, `MaxKey` | `VARCHAR` | Special BSON types stored as string representation |
+| any | `VARIANT` | Opt-in via an explicit schema; keeps each value's own BSON type (see [VARIANT Columns](#variant-columns)) |
 
 ### Schema Resolution
 
@@ -633,6 +635,33 @@ SELECT * FROM mongo_scan(
 >
 > When using `dropmalformed` or `failfast`, certain query optimizations are disabled to ensure accurate validation (e.g., aggregate pushdowns run in DuckDB instead of MongoDB, and all schema columns are fetched for validation). For best performance with large collections, use `permissive` (the default) unless strict enforcement is required.
 
+#### VARIANT Columns
+
+A column typed `VARIANT` (DuckDB 2.0+) accepts any BSON value and keeps each row's own type and shape, so it fits fields that are heterogeneous, deeply nested, or not fully covered by the sampled schema. VARIANT is opt-in: declare it in the `columns` parameter or a `__schema` document. Schema inference never produces it.
+
+```sql
+-- A sub-document as one addressable value
+SELECT name, specs.cpu::VARCHAR, specs.dimensions.width::INT, variant_keys(specs)
+FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'products',
+                columns := {'name': 'VARCHAR', 'specs': 'VARIANT'});
+
+-- A field whose type differs per document
+SELECT variant_typeof(value), TRY_CAST(value AS BIGINT)
+FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'events',
+                columns := {'value': 'VARIANT'});
+
+-- The whole document, with the special path $$ROOT
+SELECT doc.level1.level2.level3.level4.level5.level6.value::VARCHAR
+FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'deep',
+                columns := {'doc': {'type': 'VARIANT', 'path': '$$ROOT'}});
+```
+
+Values map to the VARIANT types you would expect: `int32`/`int64` to `INT32`/`INT64`, `double` to `DOUBLE`, `Date` to `TIMESTAMP_MILIS`, `Binary` to `BLOB`, `Decimal128` to `DECIMAL` (or `DOUBLE` for NaN, infinity, or exponent forms), `ObjectId` to a `VARCHAR` hex string, and `null`/`undefined` to NULL. Objects list their keys in lexicographic order, so `doc::JSON` is key-sorted. Writes go the other way: a VARIANT cell in `INSERT`, `CREATE TABLE AS`, or `COPY TO` is serialized as a real BSON subdocument, array, or scalar rather than JSON text.
+
+Notes:
+- A strict cast such as `doc.n::INT` throws if any row holds a different type; use `TRY_CAST` for mixed fields.
+- Filters, GROUP BY, and ORDER BY on VARIANT columns run in DuckDB. `COUNT(col)` is still pushed down (it counts non-null BSON values). Columns mapped to `$$ROOT` disable projection pushdown for that scan because the whole document is needed.
+
 #### Array Handling
 
 **Arrays of Objects:**
@@ -676,6 +705,7 @@ SELECT * FROM mongo_scan(
 - **Decimal128 precision**: Converted to DOUBLE, which may lose precision for high-precision decimal values
 - **Nested documents in arrays**: Stored as VARCHAR (JSON strings) rather than nested STRUCT types
   - Example: `items: [{product: 'Laptop', specs: {cpu: 'Intel', ram: '16GB'}}]` → `specs` field is VARCHAR, not STRUCT
+  - Declaring the column as `VARIANT` in an explicit schema preserves the full nested structure (see [VARIANT Columns](#variant-columns))
 
 ## Advanced Topics
 

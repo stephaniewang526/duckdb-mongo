@@ -385,6 +385,10 @@ static bool RewriteMongoTopN(unique_ptr<LogicalOperator> &node) {
 	if (order_col_idx >= bind->column_names.size() || !StringUtil::CIEquals(bind->column_names[order_col_idx], "_id")) {
 		return false;
 	}
+	// BSON sort order is not VARIANT sort order
+	if (bind->column_types[order_col_idx].id() == LogicalTypeId::VARIANT) {
+		return false;
+	}
 
 	auto pipeline_json = BuildTopNPipelineJson(get, *bind, order.type, topn.limit);
 
@@ -511,6 +515,10 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 		if (it == bind->column_name_to_mongo_path.end()) {
 			return false;
 		}
+		// BSON and VARIANT equality differ (e.g. 1 vs 1.0), so VARIANT keys group in DuckDB
+		if (gexpr->GetReturnType().id() == LogicalTypeId::VARIANT || it->second == MONGO_ROOT_PATH) {
+			return false;
+		}
 		group_fields.emplace_back(col_name, it->second);
 		group_types.push_back(gexpr->GetReturnType());
 	}
@@ -564,7 +572,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 				// COUNT(col): sum(cond($type(col) in countable types))
 				auto col_name = bind->column_names[child_col];
 				auto path_it = bind->column_name_to_mongo_path.find(col_name);
-				if (path_it == bind->column_name_to_mongo_path.end()) {
+				if (path_it == bind->column_name_to_mongo_path.end() || path_it->second == MONGO_ROOT_PATH) {
 					return false;
 				}
 				// DuckDB counts a value only if it converts to the column type: PERMISSIVE turns other BSON types
@@ -595,7 +603,7 @@ static bool RewriteMongoAggregate(unique_ptr<LogicalOperator> &node, vector<Bind
 			} else {
 				auto col_name = bind->column_names[child_col];
 				auto path_it = bind->column_name_to_mongo_path.find(col_name);
-				if (path_it == bind->column_name_to_mongo_path.end()) {
+				if (path_it == bind->column_name_to_mongo_path.end() || path_it->second == MONGO_ROOT_PATH) {
 					return false;
 				}
 				spec.append(bsoncxx::builder::basic::kvp(StringUtil::Format("$%s", kind),

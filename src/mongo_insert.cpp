@@ -12,7 +12,9 @@
 #include "duckdb/common/types/time.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/value.hpp"
+#include "duckdb/common/types/hugeint.hpp"
 #include <bsoncxx/builder/basic/array.hpp>
+#include <bsoncxx/decimal128.hpp>
 #include <bsoncxx/builder/basic/kvp.hpp>
 #include <bsoncxx/builder/basic/sub_array.hpp>
 #include <bsoncxx/builder/basic/sub_document.hpp>
@@ -72,10 +74,28 @@ static bsoncxx::types::bson_value::value CellToBson(const Value &value, const Lo
 		return types::bson_value::value(str_val);
 	}
 	case LogicalTypeId::BIGINT:
+	case LogicalTypeId::UINTEGER:
 		return types::bson_value::value(value.GetValue<int64_t>());
 	case LogicalTypeId::INTEGER:
+	case LogicalTypeId::SMALLINT:
+	case LogicalTypeId::TINYINT:
+	case LogicalTypeId::USMALLINT:
+	case LogicalTypeId::UTINYINT:
 		return types::bson_value::value(value.GetValue<int32_t>());
+	case LogicalTypeId::UBIGINT:
+	case LogicalTypeId::HUGEINT: {
+		// int64 when it fits, otherwise Decimal128 keeps the digits
+		auto huge = value.GetValue<hugeint_t>();
+		int64_t narrow;
+		if (Hugeint::TryCast(huge, narrow)) {
+			return types::bson_value::value(narrow);
+		}
+		return types::bson_value::value(bsoncxx::decimal128(huge.ToString()));
+	}
+	case LogicalTypeId::DECIMAL:
+		return types::bson_value::value(bsoncxx::decimal128(value.ToString()));
 	case LogicalTypeId::DOUBLE:
+	case LogicalTypeId::FLOAT:
 		return types::bson_value::value(value.GetValue<double>());
 	case LogicalTypeId::BOOLEAN:
 		return types::bson_value::value(value.GetValue<bool>());
@@ -86,9 +106,33 @@ static bsoncxx::types::bson_value::value CellToBson(const Value &value, const Lo
 		auto ts = Timestamp::FromDatetime(date_obj, Time::FromTime(0, 0, 0));
 		return types::bson_value::value(types::b_date {std::chrono::milliseconds(Timestamp::GetEpochMs(ts))});
 	}
-	case LogicalTypeId::TIMESTAMP: {
-		auto ts = value.GetValue<timestamp_t>();
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS: {
+		auto ts = value.DefaultCastAs(LogicalType::TIMESTAMP).GetValue<timestamp_t>();
 		return types::bson_value::value(types::b_date {std::chrono::milliseconds(Timestamp::GetEpochMs(ts))});
+	}
+	case LogicalTypeId::VARIANT: {
+		// Resolve to the concrete value (STRUCT, LIST, primitive) and serialize that
+		auto resolved = VariantValue::GetValue(value);
+		return CellToBson(resolved, resolved.type(), column_name, objectid_columns);
+	}
+	case LogicalTypeId::MAP: {
+		// A MAP with string keys is a subdocument; other key types are not addressable in BSON
+		auto &key_type = MapType::KeyType(type);
+		auto &value_type = MapType::ValueType(type);
+		if (key_type.id() != LogicalTypeId::VARCHAR) {
+			return types::bson_value::value(value.ToString());
+		}
+		bsoncxx::builder::basic::document sub;
+		for (auto &entry : MapValue::GetChildren(value)) {
+			auto &kv = StructValue::GetChildren(entry);
+			sub.append(bsoncxx::builder::basic::kvp(kv[0].GetValue<string>(),
+			                                        CellToBson(kv[1], value_type, "", objectid_columns)));
+		}
+		return types::bson_value::value(sub.view());
 	}
 	case LogicalTypeId::BLOB: {
 		auto bytes = value.GetValueUnsafe<string_t>();

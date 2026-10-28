@@ -48,7 +48,7 @@ WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
   AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-20
+21
 
 # Query collections again - should use cached data
 query I
@@ -57,7 +57,7 @@ WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
   AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-20
+21
 
 # Get list of collections (this uses cached collection names)
 query T
@@ -83,6 +83,7 @@ schema_test_nested
 schema_test_paths
 schema_test_simple
 schema_test_types
+schema_test_variant
 schema_test_with_id
 string_id_test
 type_conflicts
@@ -103,7 +104,7 @@ WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
   AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-20
+21
 
 # Verify we get the same collections (proving fresh data was fetched, not stale cache)
 query T
@@ -129,6 +130,7 @@ schema_test_nested
 schema_test_paths
 schema_test_simple
 schema_test_types
+schema_test_variant
 schema_test_with_id
 string_id_test
 type_conflicts

@@ -50,6 +50,7 @@ schema_test_nested
 schema_test_paths
 schema_test_simple
 schema_test_types
+schema_test_variant
 schema_test_with_id
 string_id_test
 type_conflicts
@@ -84,6 +85,7 @@ mongo_db	duckdb_mongo_test	schema_test_nested
 mongo_db	duckdb_mongo_test	schema_test_paths
 mongo_db	duckdb_mongo_test	schema_test_simple
 mongo_db	duckdb_mongo_test	schema_test_types
+mongo_db	duckdb_mongo_test	schema_test_variant
 mongo_db	duckdb_mongo_test	schema_test_with_id
 mongo_db	duckdb_mongo_test	string_id_test
 mongo_db	duckdb_mongo_test	type_conflicts
@@ -142,7 +144,7 @@ SELECT COUNT(*) FROM duckdb_views()
 WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test'
   AND NOT regexp_matches(view_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-20
+21
 
 query I
 SELECT column_name FROM duckdb_columns() 

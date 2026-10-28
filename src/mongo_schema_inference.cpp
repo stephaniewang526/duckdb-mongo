@@ -606,8 +606,9 @@ bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vecto
 		const auto &column_name = column_names[col_idx];
 		const auto &column_type = column_types[col_idx];
 
-		// Skip complex types (LIST, STRUCT) - they have their own conversion logic
-		if (column_type.id() == LogicalTypeId::LIST || column_type.id() == LogicalTypeId::STRUCT) {
+		// Skip complex types (LIST, STRUCT) - they have their own conversion logic; VARIANT accepts any value
+		if (column_type.id() == LogicalTypeId::LIST || column_type.id() == LogicalTypeId::STRUCT ||
+		    column_type.id() == LogicalTypeId::VARIANT) {
 			continue;
 		}
 
@@ -674,7 +675,7 @@ bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vecto
 bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<string> &column_names,
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const std::unordered_map<string, string> &column_name_to_mongo_path, SchemaMode schema_mode,
-                     bool has_explicit_schema) {
+                     bool has_explicit_schema, vector<MongoVariantColumnBuffer> *variant_buffers) {
 	// Track if we've seen any schema violations in this row (for DROPMALFORMED)
 	bool row_has_violation = false;
 
@@ -878,6 +879,39 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 	for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
 		const auto &column_name = column_names[col_idx];
 		const auto &column_type = column_types[col_idx];
+
+		if (column_type.id() == LogicalTypeId::VARIANT) {
+			// Any BSON value fits; the cell is buffered and the vector built once the chunk is complete
+			if (!variant_buffers) {
+				FlatVector::SetNull(output.data[col_idx], row_idx, true);
+				continue;
+			}
+			auto &buffer = (*variant_buffers)[col_idx];
+			std::string mongo_path = column_name;
+			auto path_it = column_name_to_mongo_path.find(column_name);
+			if (path_it != column_name_to_mongo_path.end()) {
+				mongo_path = path_it->second;
+			}
+			if (mongo_path == MONGO_ROOT_PATH) {
+				buffer.Set(row_idx, bsoncxx::types::bson_value::view(bsoncxx::types::b_document {doc}));
+				continue;
+			}
+			bsoncxx::document::element element;
+			if (mongo_path.find('.') != std::string::npos) {
+				element = getElementByMongoPath(mongo_path);
+			} else {
+				element = doc[mongo_path];
+				if (!element) {
+					element = getElementByPath(column_name);
+				}
+			}
+			if (!element || element.type() == bsoncxx::type::k_null || element.type() == bsoncxx::type::k_undefined) {
+				buffer.SetNull(row_idx);
+			} else {
+				buffer.Set(row_idx, element.get_value());
+			}
+			continue;
+		}
 
 		if (column_type.id() == LogicalTypeId::LIST) {
 			auto element = doc[column_name];
