@@ -59,22 +59,49 @@ ORDER BY _id;
 
 # Writing an inferred VARIANT column back produces the same documents
 statement ok
-CREATE TABLE m.duckdb_mongo_test.nested_variant_copy AS
+CREATE TABLE m.duckdb_mongo_test.nested_variant_copy_roundtrip AS
 SELECT _id, items, extra FROM m.duckdb_mongo_test.nested_variant_roundtrip;
 
 query II
 SELECT a.extra::JSON = b.extra::JSON, a.items::JSON = b.items::JSON
-FROM m.duckdb_mongo_test.nested_variant_roundtrip a JOIN m.duckdb_mongo_test.nested_variant_copy b USING (_id)
+FROM m.duckdb_mongo_test.nested_variant_roundtrip a JOIN m.duckdb_mongo_test.nested_variant_copy_roundtrip b USING (_id)
 WHERE a._id < 3 ORDER BY a._id;
 ----
 true	true
 true	true
 
 statement ok
-DROP TABLE m.duckdb_mongo_test.nested_variant_copy;
+DROP TABLE m.duckdb_mongo_test.nested_variant_copy_roundtrip;
 
 statement ok
 DROP TABLE m.duckdb_mongo_test.nested_variant_roundtrip;
+
+# Arrays that carry no type information (empty, all nulls, nested all nulls) merge with typed ones from other
+# documents, and become VARIANT when no document types them
+statement ok
+CREATE TABLE m.duckdb_mongo_test.nested_variant_nulls_roundtrip AS
+SELECT * FROM (VALUES
+    (1, []::INT[], [NULL, NULL]::INT[], [[NULL]]::INT[][], [[NULL]]::INT[][]),
+    (2, [7]::INT[], [3]::INT[], [[1, 2]]::INT[][], [[NULL]]::INT[][])
+) AS t(_id, empty_or_int, nulls_or_int, nested_nulls_or_int, nested_nulls_only);
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE m.duckdb_mongo_test.nested_variant_nulls_roundtrip) ORDER BY column_name;
+----
+_id	BIGINT
+empty_or_int	BIGINT[]
+nested_nulls_only	VARIANT
+nested_nulls_or_int	BIGINT[][]
+nulls_or_int	BIGINT[]
+
+query IIIII
+SELECT _id, empty_or_int, nulls_or_int, nested_nulls_or_int, nested_nulls_only::JSON FROM m.duckdb_mongo_test.nested_variant_nulls_roundtrip ORDER BY _id;
+----
+1	[]	[NULL, NULL]	[[NULL]]	[[null]]
+2	[7]	[3]	[[1, 2]]	[[null]]
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.nested_variant_nulls_roundtrip;
 
 statement ok
 DETACH m;

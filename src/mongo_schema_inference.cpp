@@ -72,6 +72,14 @@ void SetRawSchema(std::vector<std::string> &column_names, std::vector<LogicalTyp
 
 namespace {
 
+// True for the inference placeholders SQLNULL and LIST(...(SQLNULL)), which must never become a column type
+bool IsUnknownPlaceholder(const LogicalType &type) {
+	if (type.id() == LogicalTypeId::SQLNULL) {
+		return true;
+	}
+	return type.id() == LogicalTypeId::LIST && IsUnknownPlaceholder(ListType::GetChildType(type));
+}
+
 // Variant-mode conflict resolution: only lossless merges stay typed, anything else becomes VARIANT.
 // SQLNULL marks a null value (no type information); LIST(SQLNULL) marks an empty array (any element type).
 LogicalType ResolveTypeConflictVariant(const std::vector<LogicalType> &types) {
@@ -92,7 +100,7 @@ LogicalType ResolveTypeConflictVariant(const std::vector<LogicalType> &types) {
 		all_list = all_list && type.id() == LogicalTypeId::LIST;
 		all_struct = all_struct && type.id() == LogicalTypeId::STRUCT;
 	}
-	if (all_same && typed[0] != LogicalType::LIST(LogicalType::SQLNULL)) {
+	if (all_same && !IsUnknownPlaceholder(typed[0])) {
 		return typed[0];
 	}
 	if (all_struct) {
