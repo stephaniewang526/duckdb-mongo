@@ -1,0 +1,74 @@
+# name: test/sql/insert/insert_variant.test
+# description: VARIANT cells are written as typed BSON (subdocuments, arrays, scalars), not as JSON text
+# group: [insert]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+# CTAS from a VARIANT column: each row keeps its own shape
+statement ok
+CREATE TABLE m.duckdb_mongo_test.variant_roundtrip AS
+SELECT * FROM (VALUES
+    (1, '{"kind": "object", "n": 7, "nested": {"flag": true, "xs": [1, 2, 3]}}'::JSON::VARIANT),
+    (2, '[1, "two", 3.5, null]'::JSON::VARIANT),
+    (3, '"plain"'::JSON::VARIANT),
+    (4, NULL::VARIANT)
+) AS t(_id, payload);
+
+# Read it back through an explicit VARIANT column
+query III
+SELECT _id, variant_typeof(payload), payload::JSON FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_roundtrip',
+    columns := {'_id': 'BIGINT', 'payload': 'VARIANT'}
+) ORDER BY _id;
+----
+1	OBJECT(kind, n, nested)	{"kind":"object","n":7,"nested":{"flag":true,"xs":[1,2,3]}}
+2	ARRAY(4)	[1,"two",3.5,null]
+3	VARCHAR	"plain"
+4	VARIANT_NULL	NULL
+
+# The object became a real subdocument: inference flattens it into columns
+query II
+SELECT payload_kind, payload_nested_flag FROM m.duckdb_mongo_test.variant_roundtrip WHERE _id = 1;
+----
+object	true
+
+# Nested numbers are BSON numbers, so a numeric path cast works on the way back
+query I
+SELECT payload.nested.xs[3]::INT FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_roundtrip',
+    columns := {'_id': 'BIGINT', 'payload': 'VARIANT'}
+) WHERE _id = 1;
+----
+3
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.variant_roundtrip;
+
+# Typed scalars built from DuckDB values survive the VARIANT round trip with their BSON type
+statement ok
+CREATE TABLE m.duckdb_mongo_test.variant_scalars AS
+SELECT 1 AS _id,
+       {'ts': TIMESTAMP '2024-03-04 05:06:07', 'd': DATE '2024-03-04', 'dec': 12.345::DECIMAL(6,3),
+        'big': 9007199254740993::BIGINT, 'f': 1.5::FLOAT, 'b': '\x01\x02'::BLOB}::VARIANT AS v;
+
+query IIIIII
+SELECT variant_typeof(v.ts), variant_typeof(v.d), v.dec::DECIMAL(6,3), v.big::BIGINT, v.f::DOUBLE, variant_typeof(v.b)
+FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_scalars',
+    columns := {'_id': 'BIGINT', 'v': 'VARIANT'}
+);
+----
+TIMESTAMP_MILIS	TIMESTAMP_MILIS	12.345	9007199254740993	1.5	BLOB
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.variant_scalars;
+
+statement ok
+DETACH m;

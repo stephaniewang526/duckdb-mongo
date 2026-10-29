@@ -240,6 +240,11 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 			has_id = true;
 		}
 
+		// A whole-document column needs every field
+		if (mongo_path == MONGO_ROOT_PATH) {
+			return bsoncxx::builder::basic::document {}.extract();
+		}
+
 		mongo_paths.push_back(mongo_path);
 	}
 
@@ -574,14 +579,23 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	idx_t num_cols_to_use = MinValue<idx_t>(column_names->size(), output.ColumnCount());
 
 	// Initialize vectors for scanning
+	vector<idx_t> variant_columns;
 	for (idx_t col_idx = 0; col_idx < num_cols_to_use; col_idx++) {
 		auto &vec = output.data[col_idx];
 		vec.SetVectorType(VectorType::FLAT_VECTOR);
-		if (((*column_types)[col_idx].id() == LogicalTypeId::LIST ||
-		     (*column_types)[col_idx].id() == LogicalTypeId::STRUCT) &&
+		auto type_id = (*column_types)[col_idx].id();
+		if ((type_id == LogicalTypeId::LIST || type_id == LogicalTypeId::STRUCT || type_id == LogicalTypeId::VARIANT) &&
 		    !vec.GetBufferRef()) {
 			vec.Initialize(VectorDataInitialization::UNINITIALIZED, STANDARD_VECTOR_SIZE);
 		}
+		if (type_id == LogicalTypeId::VARIANT) {
+			variant_columns.push_back(col_idx);
+		}
+	}
+	// VARIANT cells are buffered per chunk (see MongoVariantColumnBuffer)
+	vector<MongoVariantColumnBuffer> variant_buffers;
+	if (!variant_columns.empty()) {
+		variant_buffers.resize(num_cols_to_use);
 	}
 
 	// If the pipeline returned no rows for a COUNT(*) pushdown, emit a single 0 row.
@@ -621,7 +635,8 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 			// Note: FlattenDocument also does schema checks, but we've already validated above
 			row_valid =
 			    FlattenDocument(doc, trunc_names, trunc_types, output, count, bind_data.column_name_to_mongo_path,
-			                    bind_data.schema_mode, bind_data.has_explicit_schema);
+			                    bind_data.schema_mode, bind_data.has_explicit_schema,
+			                    variant_columns.empty() ? nullptr : &variant_buffers);
 		}
 		++(*state.current);
 		if (row_valid) {
@@ -629,6 +644,10 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		}
 		// If row_valid is false (DROPMALFORMED), we skip incrementing count,
 		// effectively dropping this row from the output
+	}
+
+	for (auto col_idx : variant_columns) {
+		variant_buffers[col_idx].Build(count, output.data[col_idx]);
 	}
 
 	output.SetChildCardinality(count);

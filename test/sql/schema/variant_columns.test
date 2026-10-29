@@ -1,0 +1,269 @@
+# name: test/sql/schema/variant_columns.test
+# description: VARIANT columns in user-provided schemas keep the BSON type of every value
+# group: [schema]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+# ============================================================================
+# Nested documents: a sub-document column as VARIANT, addressable with dot syntax
+# ============================================================================
+
+query I
+SELECT typeof(specs) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) LIMIT 1;
+----
+VARIANT
+
+query III
+SELECT name, specs.cpu::VARCHAR, specs.dimensions.width::INT FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) ORDER BY name;
+----
+Desk	NULL	120
+Laptop	Intel i7	NULL
+Mouse	NULL	NULL
+
+# Per-row shape is preserved: each document has its own set of keys
+query II
+SELECT name, variant_keys(specs) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) ORDER BY name;
+----
+Desk	[dimensions, material]
+Laptop	[cpu, ram, storage]
+Mouse	[dpi, type]
+
+# Nested numbers keep their BSON type (int32 from mongosh) rather than becoming text
+query II
+SELECT name, variant_typeof(specs.dpi) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) WHERE name = 'Mouse';
+----
+Mouse	INT32
+
+# Casting back to JSON gives the sub-document with keys in lexicographic order
+query I
+SELECT specs::JSON FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) WHERE name = 'Mouse';
+----
+{"dpi":1600,"type":"Wireless"}
+
+# ============================================================================
+# Arrays and scalars
+# ============================================================================
+
+query III
+SELECT name, tags[1]::VARCHAR, variant_array_length(tags) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'tags': 'VARIANT'}
+) ORDER BY name;
+----
+Desk	furniture	2
+Laptop	computer	3
+Mouse	computer	2
+
+# Arrays of arrays, with per-row depth (2D and 3D in the same column). A strict cast throws when a row holds a
+# different shape, so mixed-shape columns use TRY_CAST.
+query III
+SELECT _id, TRY_CAST(data[2][1] AS INT), TRY_CAST(data[2][1][2] AS INT) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'matrix',
+    columns := {'_id': 'VARCHAR', 'data': 'VARIANT'}
+) ORDER BY _id;
+----
+MAT-001	4	NULL
+MAT-002	NULL	6
+MAT-003	30	NULL
+
+# Scalars: string, double, bool, date, ObjectId (as hex string)
+query IIIII
+SELECT variant_typeof(name), variant_typeof(balance), variant_typeof(active), variant_typeof(created_at), _id::VARCHAR
+FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'_id': 'VARIANT', 'name': 'VARIANT', 'balance': 'VARIANT', 'active': 'VARIANT', 'created_at': 'VARIANT'}
+) WHERE name::VARCHAR = 'Alice';
+----
+VARCHAR	DOUBLE	BOOL_TRUE	TIMESTAMP_MILIS	507f1f77bcf86cd799439011
+
+query I
+SELECT created_at::TIMESTAMP FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users',
+    columns := {'name': 'VARCHAR', 'created_at': 'VARIANT'}
+) WHERE name = 'Alice';
+----
+2023-01-01 00:00:00
+
+# Decimal128 keeps its digits as a DECIMAL
+query III
+SELECT name, variant_typeof(amount), amount::DECIMAL(10,2) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'decimal_test',
+    columns := {'name': 'VARCHAR', 'amount': 'VARIANT'}
+) ORDER BY name;
+----
+item1	DECIMAL(5, 2)	123.45
+item2	DECIMAL(5, 2)	999.99
+item3	DECIMAL(4, 2)	50.00
+
+# ============================================================================
+# Heterogeneous fields: each row keeps its own type instead of being coerced
+# ============================================================================
+
+query II
+SELECT variant_typeof(id), variant_typeof(value) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts',
+    columns := {'id': 'VARIANT', 'value': 'VARIANT'}
+) ORDER BY 1;
+----
+BOOL_TRUE	BOOL_FALSE
+INT32	INT32
+VARCHAR	VARCHAR
+
+query I
+SELECT sum(TRY_CAST(value AS BIGINT)) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts',
+    columns := {'id': 'VARIANT', 'value': 'VARIANT'}
+);
+----
+789
+
+# Missing fields are SQL NULL
+query II
+SELECT name, cpu IS NULL FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'cpu': {'type': 'VARIANT', 'path': 'specs.cpu'}}
+) ORDER BY name;
+----
+Desk	true
+Laptop	false
+Mouse	true
+
+# ============================================================================
+# Whole document via the $$ROOT path
+# ============================================================================
+
+query I
+SELECT variant_keys(doc) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'doc': {'type': 'VARIANT', 'path': '$$ROOT'}}
+) WHERE name = 'Mouse';
+----
+[_id, category, in_stock, name, price, quantity, specs, tags]
+
+# Fields beyond the sample-inferred schema are reachable, including deep nesting past the flattening limit
+query I
+SELECT doc.level1.level2.level3.level4.level5.level6.value::VARCHAR FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'deeply_nested',
+    columns := {'doc': {'type': 'VARIANT', 'path': '$$ROOT'}}
+);
+----
+deep value
+
+# A projection that only names the root column still fetches every field
+query I
+SELECT count(*) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'doc': {'type': 'VARIANT', 'path': '$$ROOT'}}
+) WHERE doc.price::DOUBLE > 100;
+----
+2
+
+# ============================================================================
+# Pushdown stays correct: VARIANT filters run in DuckDB, COUNT(col) counts non-NULL
+# ============================================================================
+
+query I
+SELECT count(specs) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+);
+----
+3
+
+query I
+SELECT count(cpu) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'cpu': {'type': 'VARIANT', 'path': 'specs.cpu'}}
+);
+----
+1
+
+query I
+SELECT name FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) WHERE specs.cpu::VARCHAR = 'Intel i7';
+----
+Laptop
+
+query II
+SELECT name, specs.dpi::INT FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'name': 'VARCHAR', 'specs': 'VARIANT'}
+) WHERE variant_exists(specs, 'dpi');
+----
+Mouse	1600
+
+# GROUP BY on a VARIANT key is evaluated in DuckDB
+query II
+SELECT category::VARCHAR, count(*) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products',
+    columns := {'category': 'VARIANT'}
+) GROUP BY category ORDER BY 1;
+----
+Electronics	2
+Furniture	1
+
+# ============================================================================
+# Schema enforcement: VARIANT never violates the schema
+# ============================================================================
+
+query I
+SELECT count(*) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts',
+    columns := {'id': 'VARIANT', 'value': 'VARIANT'},
+    schema_mode := 'failfast'
+);
+----
+3
+
+# ============================================================================
+# __schema document with a VARIANT column, through ATTACH
+# ============================================================================
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_test (TYPE MONGO);
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE mongo_test.duckdb_mongo_test.schema_test_variant) ORDER BY column_name;
+----
+_id	VARCHAR
+label	VARCHAR
+payload	VARIANT
+
+# The __schema document itself is a row too, so exclude it
+query III
+SELECT label, variant_typeof(payload), payload::JSON FROM mongo_test.duckdb_mongo_test.schema_test_variant
+WHERE _id <> '__schema' ORDER BY _id;
+----
+object	OBJECT(kind, n)	{"kind":"a","n":1}
+array	ARRAY(3)	[1,"two",3.5]
+scalar	VARCHAR	"plain string"
+missing	VARIANT_NULL	NULL
+
+query I
+SELECT payload[2]::VARCHAR FROM mongo_test.duckdb_mongo_test.schema_test_variant WHERE label = 'array';
+----
+two
+
+statement ok
+DETACH mongo_test;

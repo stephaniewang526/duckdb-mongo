@@ -493,6 +493,20 @@ db.schema_test_types.insertOne({
   created: 'TIMESTAMP'
 });
 
+// Collection with a __schema document that types a heterogeneous field as VARIANT
+db.schema_test_variant.insertMany([
+  { _id: 1, label: 'object', payload: { kind: 'a', n: NumberInt(1) } },
+  { _id: 2, label: 'array', payload: [1, 'two', 3.5] },
+  { _id: 3, label: 'scalar', payload: 'plain string' },
+  { _id: 4, label: 'missing' }
+]);
+
+db.schema_test_variant.insertOne({
+  _id: '__schema',
+  label: 'VARCHAR',
+  payload: 'VARIANT'
+});
+
 // Collection for testing case-variant field name deduplication (issue #35).
 // MongoDB is case-sensitive so 'clientFullname' and 'ClientFullname' are distinct fields.
 // DuckDB is case-insensitive, so inferring both would produce a duplicate column name error.
@@ -539,7 +553,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, string_id_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types, case_variant_fields_test, sample_size_test"
+echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, string_id_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types, schema_test_variant, case_variant_fields_test, sample_size_test"
 echo ""
 
 # Export environment variables for tests

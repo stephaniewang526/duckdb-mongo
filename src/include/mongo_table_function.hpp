@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "mongo_variant.hpp"
 #include <mongocxx/client.hpp>
 #include <mongocxx/instance.hpp>
 #include <bsoncxx/document/view.hpp>
@@ -122,10 +123,12 @@ std::string SchemaModeToString(SchemaMode mode);
 
 // Returns true if row is valid, false if row should be skipped (DROPMALFORMED)
 // Throws exception in FAILFAST mode on schema violation
+// variant_buffers (one per column) receives the cells of VARIANT columns; without it those cells are NULL
 bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const std::unordered_map<std::string, std::string> &column_name_to_mongo_path,
-                     SchemaMode schema_mode = SchemaMode::PERMISSIVE, bool has_explicit_schema = false);
+                     SchemaMode schema_mode = SchemaMode::PERMISSIVE, bool has_explicit_schema = false,
+                     vector<MongoVariantColumnBuffer> *variant_buffers = nullptr);
 
 bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
                             const std::vector<LogicalType> &column_types,
