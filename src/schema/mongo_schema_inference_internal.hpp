@@ -63,8 +63,15 @@ LogicalType InferTypeFromBSONElement(const ElementType &element) {
 
 std::string GetBSONTypeName(bsoncxx::type type);
 
-LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth);
-LogicalType InferNestedArrayType(bsoncxx::array::view array, int depth);
+LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth,
+                                     MongoNestedType nested_type = MongoNestedType::JSON);
+LogicalType InferNestedArrayType(bsoncxx::array::view array, int depth,
+                                 MongoNestedType nested_type = MongoNestedType::JSON);
+// Type of an array of primitives. In variant mode an array whose scanned elements disagree on type, or contain
+// documents/arrays, yields VARIANT instead of LIST of the first element's type.
+LogicalType InferPrimitiveArrayType(bsoncxx::array::view array, MongoNestedType nested_type);
+// The column type used where flattening gives up (JSON string or VARIANT)
+LogicalType MongoFallbackType(MongoNestedType nested_type);
 
 Value BSONElementToValue(const bsoncxx::document::element &element, const LogicalType &target_type);
 Value BSONDocumentToStruct(const bsoncxx::document::view &doc, const LogicalType &struct_type);

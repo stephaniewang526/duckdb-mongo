@@ -57,7 +57,7 @@ SELECT * FROM atlas_db.mydb.mycollection;
 - **Flexible schema handling**: User-provided schemas, `__schema` document support (Atlas SQL compatibility), or automatic inference
 - Nested document flattening with underscore-separated names
 - **BSON type mapping** including Decimal128, arrays, and nested documents (see [BSON Type Mapping](#bson-type-mapping))
-- **VARIANT columns** that keep the BSON type of every value for heterogeneous or deeply nested fields (see [VARIANT Columns](#variant-columns))
+- **VARIANT columns** that keep the BSON type of every value for heterogeneous or deeply nested fields, per column, as the inference fallback (`SET mongo_nested_type = 'variant'`), or for whole documents (`raw := true`) (see [VARIANT Columns](#variant-columns))
 - **Query pushdown** to reduce data transfer (see [Pushdown Strategy](#pushdown-strategy)):
   - Filters (WHERE clauses, complex expressions, semi-join IN)
   - Projections (SELECT columns)
@@ -376,6 +376,8 @@ SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
 - `sample_size` (optional): Number of documents to sample for schema inference (default: the `mongo_sample_size` setting, which defaults to 100; see [Schema Inference Sample Size](#schema-inference-sample-size))
 - `columns` (optional): Explicit schema definition as a struct (see [Schema Resolution](#schema-resolution) for details)
 - `schema_mode` (optional): How to handle type mismatches: `'permissive'` (default), `'dropmalformed'`, or `'failfast'` (see [Schema Enforcement Modes](#schema-enforcement-modes))
+- `nested_type` (optional): How inferred schemas represent nested documents, irregular arrays and type conflicts: `'json'` (default: VARCHAR holding JSON text) or `'variant'` (DuckDB `VARIANT`). Defaults to the `mongo_nested_type` setting (see [VARIANT Columns](#variant-columns))
+- `raw` (optional): `true` skips schema inference and returns `(_id VARCHAR, doc VARIANT)` with `doc` holding the whole document. Cannot be combined with `columns` (see [VARIANT Columns](#variant-columns))
 
 ### Schema Inference Sample Size
 
@@ -501,7 +503,7 @@ DROP TABLE IF EXISTS m.duckdb_mongo_test.my_collection;
 | `Document` | `VARCHAR` | Nested documents stored as JSON string |
 | `Null`, `Undefined` | `VARCHAR` | Type refined from other documents during inference |
 | `Regex`, `Code`, `Symbol`, `Timestamp`, `MinKey`, `MaxKey` | `VARCHAR` | Special BSON types stored as string representation |
-| any | `VARIANT` | Opt-in via an explicit schema; keeps each value's own BSON type (see [VARIANT Columns](#variant-columns)) |
+| any | `VARIANT` | Opt-in via an explicit schema, `nested_type := 'variant'`, or `raw := true`; keeps each value's own BSON type (see [VARIANT Columns](#variant-columns)) |
 
 ### Schema Resolution
 
@@ -587,13 +589,14 @@ For MongoDB Atlas SQL compatibility, you can store a schema document in your col
 
 When neither user-provided schema nor `__schema` document is available, the extension automatically infers schemas by sampling documents (default: 100, configurable per scan via `sample_size` or globally via `SET mongo_sample_size`; see [Schema Inference Sample Size](#schema-inference-sample-size)):
 
-- **Nested Documents**: Flattened with underscore-separated names (e.g., `user_address_city`), up to 5 levels deep
+- **Nested Documents**: Flattened with underscore-separated names (e.g., `user_address_city`), up to 5 levels deep. The parent document is also exposed as a whole (JSON text by default, or `VARIANT` with `nested_type := 'variant'`; see [VARIANT Columns](#variant-columns))
 - **Type Conflicts**: Frequency-based resolution:
   - VARCHAR if >70% of values are strings
   - DOUBLE if ≥30% are doubles (or any doubles present)
   - BIGINT if ≥30% are integers (when no doubles)
   - BOOLEAN/TIMESTAMP if ≥70% match
   - Defaults to VARCHAR
+  - With `nested_type := 'variant'`, only lossless merges stay typed (`BIGINT`+`DOUBLE` to `DOUBLE`, `DATE`+`TIMESTAMP` to `TIMESTAMP`, same-shaped LISTs and STRUCTs are merged); any other conflict becomes `VARIANT`
 - **Missing Fields**: NULL values
 
 #### Schema Enforcement Modes
@@ -637,7 +640,13 @@ SELECT * FROM mongo_scan(
 
 #### VARIANT Columns
 
-A column typed `VARIANT` (DuckDB 2.0+) accepts any BSON value and keeps each row's own type and shape, so it fits fields that are heterogeneous, deeply nested, or not fully covered by the sampled schema. VARIANT is opt-in: declare it in the `columns` parameter or a `__schema` document. Schema inference never produces it.
+A column typed `VARIANT` (DuckDB 2.0+) accepts any BSON value and keeps each row's own type and shape, so it fits fields that are heterogeneous, deeply nested, or not fully covered by the sampled schema. VARIANT is opt-in, in three ways:
+
+1. Declare it in the `columns` parameter or a `__schema` document (explicit schema).
+2. `nested_type := 'variant'` or `SET mongo_nested_type = 'variant'`: schema inference produces `VARIANT` wherever it would otherwise fall back to JSON text.
+3. `raw := true`: no inference at all; the scan returns `(_id VARCHAR, doc VARIANT)`.
+
+**Explicit schema:**
 
 ```sql
 -- A sub-document as one addressable value
@@ -655,6 +664,43 @@ SELECT doc.level1.level2.level3.level4.level5.level6.value::VARCHAR
 FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'deep',
                 columns := {'doc': {'type': 'VARIANT', 'path': '$$ROOT'}});
 ```
+
+**Inference with `nested_type := 'variant'`:**
+
+Flat scalar fields are inferred exactly as before. The difference is what happens where flattening gives up:
+
+| Situation | `nested_type := 'json'` (default) | `nested_type := 'variant'` |
+|-----------|-----------------------------------|----------------------------|
+| Parent of a flattened sub-document (`specs` next to `specs_cpu`) | VARCHAR (JSON text) | VARIANT |
+| Nesting deeper than 5 levels, empty arrays, structures inference cannot type | VARCHAR (JSON text) | VARIANT |
+| Array of primitives with mixed element types (`[1, "two", 3.5]`) | LIST of the first element's type; other elements become NULL | VARIANT |
+| Arrays whose depth differs per document | LIST at the deepest depth; shallower rows are wrapped | VARIANT |
+| Scalar type conflict (`"123"` in one document, `123` in another) | Most frequent type; other rows become NULL | VARIANT |
+| Field that is null in every sampled document | VARCHAR | VARIANT |
+| Documents/arrays inside an array of objects | VARCHAR field in the STRUCT | VARIANT field in the STRUCT |
+
+```sql
+-- Per scan
+SELECT name, specs.cpu::VARCHAR, variant_typeof(value)
+FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'products', nested_type := 'variant');
+
+-- For every inferred collection, including attached catalogs
+SET mongo_nested_type = 'variant';
+ATTACH 'host=localhost port=27017 dbname=mydb' AS mongo_db (TYPE MONGO);
+SELECT specs.cpu::VARCHAR FROM mongo_db.products;
+```
+
+Resolution order: `mongo_scan(..., nested_type := ...)` > `SET mongo_nested_type` > default `json`. Like `mongo_sample_size`, the setting is read when a collection's schema is first inferred and the result is cached: run `mongo_clear_cache()` or re-`ATTACH` after changing it. Explicit schemas (`columns` or `__schema`) ignore it.
+
+**Raw scan with `raw := true`:**
+
+```sql
+SELECT _id, doc.name::VARCHAR, variant_keys(doc)
+FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'users', raw := true)
+WHERE _id = '507f1f77bcf86cd799439011';
+```
+
+No documents are sampled, so the first query on a large or very irregular collection starts immediately and no field can be missed. `_id` stays a regular column (ObjectIds as hex strings) so filters on it are pushed down; `doc` is the whole document, so no projection is sent and predicates on `doc` run in DuckDB. `filter` and `pipeline` still apply server-side. `raw` cannot be combined with `columns`.
 
 Values map to the VARIANT types you would expect: `int32`/`int64` to `INT32`/`INT64`, `double` to `DOUBLE`, `Date` to `TIMESTAMP_MILIS`, `Binary` to `BLOB`, `Decimal128` to `DECIMAL` (or `DOUBLE` for NaN, infinity, or exponent forms), `ObjectId` to a `VARCHAR` hex string, and `null`/`undefined` to NULL. Objects list their keys in lexicographic order, so `doc::JSON` is key-sorted. Writes go the other way: a VARIANT cell in `INSERT`, `CREATE TABLE AS`, or `COPY TO` is serialized as a real BSON subdocument, array, or scalar rather than JSON text.
 
@@ -705,7 +751,7 @@ Notes:
 - **Decimal128 precision**: Converted to DOUBLE, which may lose precision for high-precision decimal values
 - **Nested documents in arrays**: Stored as VARCHAR (JSON strings) rather than nested STRUCT types
   - Example: `items: [{product: 'Laptop', specs: {cpu: 'Intel', ram: '16GB'}}]` → `specs` field is VARCHAR, not STRUCT
-  - Declaring the column as `VARIANT` in an explicit schema preserves the full nested structure (see [VARIANT Columns](#variant-columns))
+  - Declaring the column as `VARIANT` in an explicit schema, or scanning with `nested_type := 'variant'`, preserves the full nested structure (see [VARIANT Columns](#variant-columns))
 
 ## Advanced Topics
 

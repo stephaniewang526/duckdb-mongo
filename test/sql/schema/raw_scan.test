@@ -1,0 +1,100 @@
+# name: test/sql/schema/raw_scan.test
+# description: mongo_scan(raw := true) skips inference and returns (_id VARCHAR, doc VARIANT)
+# group: [schema]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true));
+----
+_id	VARCHAR
+doc	VARIANT
+
+statement error
+SELECT * FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true,
+    columns := {'name': 'VARCHAR'});
+----
+'raw' and 'columns' cannot be combined
+
+# raw := false is the default behavior
+query I
+SELECT COUNT(*) > 2 FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := false));
+----
+true
+
+# The whole document is available with dot syntax, including the _id
+query IIII
+SELECT _id, doc.name::VARCHAR, doc.address.city::VARCHAR, doc._id::VARCHAR = _id FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true)
+ORDER BY _id LIMIT 2;
+----
+507f1f77bcf86cd799439011	Alice	New York	true
+507f1f77bcf86cd799439012	Bob	Los Angeles	true
+
+query I
+SELECT variant_keys(doc) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true)
+WHERE doc.name::VARCHAR = 'Alice';
+----
+[_id, active, address, age, balance, created_at, email, name, tags]
+
+# Works on collections with no stable shape, without sampling
+query II
+SELECT doc.label::VARCHAR, variant_typeof(doc.payload) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'schema_test_variant', raw := true)
+WHERE _id <> '__schema'
+ORDER BY doc._id::INT;
+----
+object	OBJECT(kind, n)
+array	ARRAY(3)
+scalar	VARCHAR
+missing	VARIANT_NULL
+
+# Filters on _id and COUNT(*) are still pushed to MongoDB; filters on doc run in DuckDB
+statement ok
+CALL enable_logging('MongoQuery');
+
+query I
+SELECT doc.name::VARCHAR FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true)
+WHERE _id = '507f1f77bcf86cd799439011';
+----
+Alice
+
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true)
+WHERE doc.age::INT > 26;
+----
+3
+
+# The _id filter went to MongoDB as an ObjectId; no projection is sent because doc needs the whole document
+query II
+SELECT DISTINCT json_extract_string(message, '$.find.filter'), json_extract_string(message, '$.find.projection')
+FROM duckdb_logs
+WHERE type = 'MongoQuery' AND json_extract_string(message, '$.find.filter') LIKE '%507f1f77bcf86cd799439011%';
+----
+{"_id":{"$eq":{"$oid":"507f1f77bcf86cd799439011"}}}	{}
+
+statement ok
+CALL disable_logging();
+
+# The filter and pipeline parameters combine with raw
+query I
+SELECT doc.name::VARCHAR FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true, filter := '{"age": {"$lt": 26}}');
+----
+Bob
+
+query I
+SELECT doc.name::VARCHAR FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'users', raw := true,
+    pipeline := '[{"$match": {"active": true}}, {"$sort": {"name": 1}}, {"$limit": 1}]');
+----
+Alice

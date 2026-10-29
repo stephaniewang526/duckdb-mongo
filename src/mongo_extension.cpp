@@ -108,6 +108,13 @@ static void LoadInternal(ExtensionLoader &loader) {
 	    "schemas are cached per attached collection; call mongo_clear_cache() or re-ATTACH after "
 	    "changing this to re-infer. Must be between 1 and 2147483647.",
 	    LogicalType::BIGINT, Value::BIGINT(100), MongoSampleSizeSetCallback);
+	config.AddExtensionOption(
+	    "mongo_nested_type",
+	    "How inferred schemas represent nested documents, irregular arrays and type conflicts: 'json' (VARCHAR "
+	    "holding JSON text) or 'variant' (DuckDB VARIANT built from BSON). Applies when mongo_scan is called "
+	    "without an explicit nested_type, including collections queried through an attached catalog; inferred "
+	    "schemas are cached per attached collection, so call mongo_clear_cache() or re-ATTACH after changing this.",
+	    LogicalType::VARCHAR, Value("json"), MongoNestedTypeSetCallback);
 	auto storage_extension = MongoStorageExtension::Create();
 	shared_ptr<StorageExtension> storage_extension_ptr = std::move(storage_extension);
 	StorageExtension::Register(config, "mongo", std::move(storage_extension_ptr));

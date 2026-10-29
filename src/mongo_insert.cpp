@@ -238,6 +238,7 @@ unique_ptr<CatalogEntry> MongoCreateTableEntry(Catalog &catalog, SchemaCatalogEn
 	scan_data->database_name = database_name;
 	scan_data->collection_name = collection_name;
 	scan_data->sample_size = MongoDefaultSampleSize(context);
+	scan_data->nested_type = MongoDefaultNestedType(context);
 
 	try {
 		// Only surface a table for a collection that actually exists. Schema inference on a missing collection would

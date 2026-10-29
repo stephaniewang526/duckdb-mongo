@@ -1,0 +1,110 @@
+# name: test/sql/insert/insert_nested_type_variant.test
+# description: Round trip through MongoDB with SET mongo_nested_type = 'variant', including VARIANT fields inside STRUCT lists
+# group: [insert]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+SET mongo_nested_type = 'variant';
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+# Array elements with a nested document and a field whose type differs per element
+statement ok
+CREATE TABLE m.duckdb_mongo_test.nested_variant_roundtrip AS
+SELECT * FROM (VALUES
+    (1, 'alpha', [{'name': 'a', 'meta': {'k': 1}, 'score': 10}]::STRUCT(name VARCHAR, meta STRUCT(k INT), score INT)[],
+        '{"tags": ["x", 2, null], "deep": {"a": {"b": {"c": {"d": {"e": {"f": 1}}}}}}}'::JSON::VARIANT),
+    (2, 'beta', [{'name': 'b', 'meta': {'k': 2}, 'score': 20}, {'name': 'c', 'meta': {'k': 3}, 'score': 30}],
+        '{"tags": [], "deep": {"a": {"b": {"c": {"d": {"e": {"f": "one"}}}}}}}'::JSON::VARIANT),
+    (3, 'gamma', [], NULL::VARIANT)
+) AS t(_id, label, items, extra);
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE m.duckdb_mongo_test.nested_variant_roundtrip) ORDER BY column_name;
+----
+_id	BIGINT
+extra	VARIANT
+extra_deep	VARIANT
+extra_deep_a	VARIANT
+extra_deep_a_b	VARIANT
+extra_deep_a_b_c	VARIANT
+extra_deep_a_b_c_d	VARIANT
+extra_tags	VARIANT
+items	STRUCT(meta VARIANT, "name" VARCHAR, score BIGINT)[]
+label	VARCHAR
+
+# The subdocument inside each array element comes back as a VARIANT struct field
+query III
+SELECT _id, items[1].meta.k::INT, list_transform(items, lambda x: x.meta::JSON) FROM m.duckdb_mongo_test.nested_variant_roundtrip
+ORDER BY _id;
+----
+1	1	[{"k":1}]
+2	2	[{"k":2}, {"k":3}]
+3	NULL	[]
+
+# The heterogeneous array and the level beyond the flattening limit keep every value
+query III
+SELECT _id, extra_tags::JSON, variant_typeof(extra_deep_a_b_c_d.e.f) FROM m.duckdb_mongo_test.nested_variant_roundtrip
+ORDER BY _id;
+----
+1	["x",2,null]	INT64
+2	[]	VARCHAR
+3	NULL	VARIANT_NULL
+
+# Writing an inferred VARIANT column back produces the same documents
+statement ok
+CREATE TABLE m.duckdb_mongo_test.nested_variant_copy_roundtrip AS
+SELECT _id, items, extra FROM m.duckdb_mongo_test.nested_variant_roundtrip;
+
+query II
+SELECT a.extra::JSON = b.extra::JSON, a.items::JSON = b.items::JSON
+FROM m.duckdb_mongo_test.nested_variant_roundtrip a JOIN m.duckdb_mongo_test.nested_variant_copy_roundtrip b USING (_id)
+WHERE a._id < 3 ORDER BY a._id;
+----
+true	true
+true	true
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.nested_variant_copy_roundtrip;
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.nested_variant_roundtrip;
+
+# Arrays that carry no type information (empty, all nulls, nested all nulls) merge with typed ones from other
+# documents, and become VARIANT when no document types them
+statement ok
+CREATE TABLE m.duckdb_mongo_test.nested_variant_nulls_roundtrip AS
+SELECT * FROM (VALUES
+    (1, []::INT[], [NULL, NULL]::INT[], [[NULL]]::INT[][], [[NULL]]::INT[][]),
+    (2, [7]::INT[], [3]::INT[], [[1, 2]]::INT[][], [[NULL]]::INT[][])
+) AS t(_id, empty_or_int, nulls_or_int, nested_nulls_or_int, nested_nulls_only);
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE m.duckdb_mongo_test.nested_variant_nulls_roundtrip) ORDER BY column_name;
+----
+_id	BIGINT
+empty_or_int	BIGINT[]
+nested_nulls_only	VARIANT
+nested_nulls_or_int	BIGINT[][]
+nulls_or_int	BIGINT[]
+
+query IIIII
+SELECT _id, empty_or_int, nulls_or_int, nested_nulls_or_int, nested_nulls_only::JSON FROM m.duckdb_mongo_test.nested_variant_nulls_roundtrip ORDER BY _id;
+----
+1	[]	[NULL, NULL]	[[NULL]]	[[null]]
+2	[7]	[3]	[[1, 2]]	[[null]]
+
+statement ok
+DROP TABLE m.duckdb_mongo_test.nested_variant_nulls_roundtrip;
+
+statement ok
+DETACH m;
+
+statement ok
+RESET mongo_nested_type;

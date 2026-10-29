@@ -24,4 +24,7 @@ private:
 	vector<std::string> cells;
 };
 
+// One BSON value as a VARIANT Value, for VARIANT fields nested inside STRUCT/LIST columns.
+Value BsonValueToVariant(const bsoncxx::types::bson_value::view &value);
+
 } // namespace duckdb

@@ -1,0 +1,295 @@
+# name: test/sql/schema/nested_type_variant.test
+# description: nested_type := 'variant' / SET mongo_nested_type makes inference fall back to VARIANT instead of JSON text
+# group: [schema]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+# ============================================================================
+# Parameter and setting validation
+# ============================================================================
+
+statement error
+SELECT * FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'products', nested_type := 'bogus');
+----
+Invalid nested_type 'bogus'. Valid options: 'json', 'variant'
+
+statement error
+SET mongo_nested_type = 'bogus';
+----
+Invalid nested_type 'bogus'
+
+statement error
+SET mongo_nested_type = NULL;
+----
+mongo_nested_type cannot be NULL
+
+query I
+SELECT current_setting('mongo_nested_type');
+----
+json
+
+# ============================================================================
+# Sub-documents: flattened child columns stay, the parent column becomes VARIANT instead of a JSON string
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products', nested_type := 'variant'))
+WHERE column_name IN ('specs', 'specs_dimensions', 'specs_cpu', 'specs_dimensions_width', 'tags')
+ORDER BY column_name;
+----
+specs	VARIANT
+specs_cpu	VARCHAR
+specs_dimensions	VARIANT
+specs_dimensions_width	BIGINT
+tags	VARCHAR[]
+
+# Default mode is unchanged
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products'))
+WHERE column_name IN ('specs', 'specs_dimensions')
+ORDER BY column_name;
+----
+specs	VARCHAR
+specs_dimensions	VARCHAR
+
+query IIII
+SELECT name, variant_typeof(specs), specs.cpu::VARCHAR, specs_dimensions.width::INT FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products', nested_type := 'variant')
+ORDER BY name;
+----
+Desk	OBJECT(dimensions, material)	NULL	120
+Laptop	OBJECT(cpu, ram, storage)	Intel i7	NULL
+Mouse	OBJECT(dpi, type)	NULL	NULL
+
+# The parent VARIANT keeps the original BSON types (int stays int)
+query II
+SELECT name, variant_typeof(specs.dpi) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products', nested_type := 'variant')
+WHERE name = 'Mouse';
+----
+Mouse	INT32
+
+# ============================================================================
+# Arrays: homogeneous arrays stay LIST (empty arrays are compatible with any LIST), irregular ones become VARIANT
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'orders', nested_type := 'variant'))
+WHERE column_name IN ('items', 'notes')
+ORDER BY column_name;
+----
+items	STRUCT(price DOUBLE, product VARCHAR, quantity BIGINT)[]
+notes	VARCHAR[]
+
+# matrix.data mixes 2D and 3D arrays: one VARIANT column, each row keeps its own depth
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'matrix', nested_type := 'variant'))
+WHERE column_name = 'data';
+----
+data	VARIANT
+
+query IIII
+SELECT _id, variant_array_length(data), TRY_CAST(data[2][1] AS INT), TRY_CAST(data[2][1][2] AS INT) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'matrix', nested_type := 'variant')
+ORDER BY _id;
+----
+MAT-001	3	4	NULL
+MAT-002	2	NULL	6
+MAT-003	3	30	NULL
+
+# ============================================================================
+# Type conflicts: unrelated scalar types resolve to VARIANT instead of the most frequent type
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts', nested_type := 'variant'))
+WHERE column_name IN ('id', 'value')
+ORDER BY column_name;
+----
+id	VARIANT
+value	VARIANT
+
+query IIII
+SELECT variant_typeof(id), id::VARCHAR, variant_typeof(value), value::VARCHAR FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts', nested_type := 'variant')
+ORDER BY _id;
+----
+VARCHAR	123	VARCHAR	string
+INT32	456	INT32	789
+BOOL_TRUE	true	BOOL_FALSE	false
+
+# Default mode still picks a scalar type (and loses the non-conforming rows)
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts'))
+WHERE column_name IN ('id', 'value')
+ORDER BY column_name;
+----
+id	BIGINT
+value	BIGINT
+
+# GROUP BY and filters on an inferred VARIANT column run in DuckDB and are correct
+query II
+SELECT value::VARCHAR, COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts', nested_type := 'variant')
+GROUP BY 1 ORDER BY 1;
+----
+789	1
+false	1
+string	1
+
+query I
+SELECT COUNT(*) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'type_conflicts', nested_type := 'variant')
+WHERE variant_typeof(id) = 'INT32';
+----
+1
+
+# ============================================================================
+# Fields with mixed string/number values and all-null fields
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'object_container_test', nested_type := 'variant'))
+WHERE column_name IN ('case_data', 'case_data_client_id', 'case_data_client_code', 'referrence_id', 'request_type')
+ORDER BY column_name;
+----
+case_data	VARIANT
+case_data_client_code	VARCHAR
+case_data_client_id	VARIANT
+referrence_id	VARIANT
+request_type	VARIANT
+
+query III
+SELECT case_id, variant_typeof(case_data_client_id), case_data_client_id::VARCHAR FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'object_container_test', nested_type := 'variant')
+ORDER BY case_id;
+----
+Task-000000-00000	VARCHAR	12345
+Task-409997-94913	INT32	12322
+
+# COUNT(col) on VARIANT columns agrees with the DuckDB side (BSON null and missing are both NULL)
+query III
+SELECT COUNT(*), COUNT(referrence_id), COUNT(case_data_client_id) FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'object_container_test', nested_type := 'variant');
+----
+2	0	2
+
+# ============================================================================
+# Depth limit: the level beyond the flattening limit becomes VARIANT, still fully addressable
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'deeply_nested', nested_type := 'variant'))
+WHERE column_name IN ('level1', 'level1_level2_level3_level4_level5_level6')
+ORDER BY column_name;
+----
+level1	VARIANT
+level1_level2_level3_level4_level5_level6	VARIANT
+
+query II
+SELECT level1_level2_level3_level4_level5_level6.value::VARCHAR, level1.level2.level3.level4.level5.level6.value::VARCHAR
+FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'deeply_nested', nested_type := 'variant');
+----
+deep value	deep value
+
+# ============================================================================
+# A collection with no stable shape (one field is object / array / string / missing)
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'schema_test_variant', nested_type := 'variant'))
+ORDER BY column_name;
+----
+_id	VARCHAR
+label	VARCHAR
+payload	VARIANT
+
+# ============================================================================
+# Explicit schemas ignore nested_type
+# ============================================================================
+
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products', nested_type := 'variant',
+    columns := {'name': 'VARCHAR', 'specs': 'JSON'}))
+WHERE column_name <> '_id'
+ORDER BY column_name;
+----
+name	VARCHAR
+specs	JSON
+
+# ============================================================================
+# SET mongo_nested_type applies to direct scans and to attached catalogs
+# ============================================================================
+
+statement ok
+SET mongo_nested_type = 'variant';
+
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products'))
+WHERE column_name = 'specs';
+----
+VARIANT
+
+# An explicit parameter overrides the setting
+query I
+SELECT column_type FROM (DESCRIBE SELECT * FROM mongo_scan(
+    'mongodb://localhost:27017', 'duckdb_mongo_test', 'products', nested_type := 'json'))
+WHERE column_name = 'specs';
+----
+VARCHAR
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS mongo_nt (TYPE MONGO);
+
+query I
+SELECT column_type FROM (DESCRIBE mongo_nt.products) WHERE column_name = 'specs';
+----
+VARIANT
+
+query II
+SELECT name, specs.ram::VARCHAR FROM mongo_nt.products WHERE specs.ram IS NOT NULL;
+----
+Laptop	16GB
+
+# Inferred schemas are cached per collection: changing the setting takes effect after mongo_clear_cache()
+statement ok
+SET mongo_nested_type = 'json';
+
+query I
+SELECT column_type FROM (DESCRIBE mongo_nt.products) WHERE column_name = 'specs';
+----
+VARIANT
+
+statement ok
+SELECT * FROM mongo_clear_cache();
+
+query I
+SELECT column_type FROM (DESCRIBE mongo_nt.products) WHERE column_name = 'specs';
+----
+VARCHAR
+
+statement ok
+DETACH mongo_nt;
+
+statement ok
+RESET mongo_nested_type;
+
+query I
+SELECT current_setting('mongo_nested_type');
+----
+json

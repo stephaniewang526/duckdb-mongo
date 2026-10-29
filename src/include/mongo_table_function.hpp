@@ -21,6 +21,13 @@ enum class SchemaMode {
 	FAILFAST       // Throw error immediately on first mismatch
 };
 
+// How schema inference represents values that do not fit a flat column: nested documents exposed as a whole,
+// structures too deep or irregular to flatten, heterogeneous arrays, and unresolvable type conflicts.
+enum class MongoNestedType {
+	JSON,   // VARCHAR holding JSON text (default); conflicts resolve to the most frequent scalar type
+	VARIANT // DuckDB VARIANT built from BSON; conflicts between unrelated types resolve to VARIANT
+};
+
 struct MongoConnection {
 	std::string connection_string;
 	mongocxx::client client;
@@ -43,6 +50,10 @@ struct MongoScanData : public TableFunctionData {
 	SchemaMode schema_mode;
 	//! Whether an explicit schema was provided (only enforce schema_mode when true)
 	bool has_explicit_schema;
+	//! Representation of nested/irregular values when the schema is inferred
+	MongoNestedType nested_type;
+	//! raw := true: no inference, the schema is (_id VARCHAR, doc VARIANT) with doc bound to the whole document
+	bool raw;
 
 	// Schema information
 	vector<string> column_names;
@@ -62,6 +73,7 @@ struct MongoScanData : public TableFunctionData {
 
 	MongoScanData()
 	    : sample_size(100), schema_mode(SchemaMode::PERMISSIVE), has_explicit_schema(false),
+	      nested_type(MongoNestedType::JSON), raw(false),
 	      complex_filter_expr(bsoncxx::builder::basic::document {}.extract()),
 	      match_filter(bsoncxx::builder::basic::document {}.extract()) {
 	}
@@ -104,16 +116,31 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 
 void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_size,
                               std::vector<std::string> &column_names, std::vector<LogicalType> &column_types,
-                              std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
+                              std::unordered_map<std::string, std::string> &column_name_to_mongo_path,
+                              MongoNestedType nested_type = MongoNestedType::JSON);
 
 void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &prefix, int depth,
                        std::unordered_map<std::string, std::vector<LogicalType>> &field_types,
                        std::unordered_map<std::string, std::string> &flattened_to_mongo_path,
-                       const std::string &mongo_prefix = "");
+                       const std::string &mongo_prefix = "", MongoNestedType nested_type = MongoNestedType::JSON);
 
 LogicalType InferTypeFromBSON(const bsoncxx::document::element &element);
 
-LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types);
+LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types,
+                                MongoNestedType nested_type = MongoNestedType::JSON);
+
+// The raw := true schema: (_id VARCHAR, doc VARIANT) with doc mapped to $$ROOT.
+void SetRawSchema(std::vector<std::string> &column_names, std::vector<LogicalType> &column_types,
+                  std::unordered_map<std::string, std::string> &column_name_to_mongo_path);
+
+// Parse the nested_type parameter / mongo_nested_type setting ('json' or 'variant', case-insensitive)
+MongoNestedType ParseMongoNestedType(const std::string &value);
+
+// Default nested representation for inferred schemas. Reads the `mongo_nested_type` setting; json when unset.
+MongoNestedType MongoDefaultNestedType(ClientContext &context);
+
+// SET callback for the `mongo_nested_type` extension option; rejects unknown values at SET time.
+void MongoNestedTypeSetCallback(ClientContext &context, SetScope scope, Value &parameter);
 
 // Parse schema mode from string (case-insensitive)
 SchemaMode ParseSchemaMode(const std::string &mode_str);

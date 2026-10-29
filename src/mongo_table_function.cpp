@@ -96,6 +96,21 @@ int64_t MongoDefaultSampleSize(ClientContext &context) {
 	return sample_size;
 }
 
+void MongoNestedTypeSetCallback(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("mongo_nested_type cannot be NULL");
+	}
+	ParseMongoNestedType(parameter.GetValue<string>());
+}
+
+MongoNestedType MongoDefaultNestedType(ClientContext &context) {
+	Value setting_val;
+	if (!context.TryGetCurrentSetting("mongo_nested_type", setting_val) || setting_val.IsNull()) {
+		return MongoNestedType::JSON;
+	}
+	return ParseMongoNestedType(setting_val.GetValue<string>());
+}
+
 unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBindInput &input,
                                        vector<LogicalType> &return_types, vector<Identifier> &names) {
 	auto result = make_uniq<MongoScanData>();
@@ -153,10 +168,32 @@ unique_ptr<FunctionData> MongoScanBind(ClientContext &context, TableFunctionBind
 		result->schema_mode = ParseSchemaMode(input.named_parameters["schema_mode"].GetValue<string>());
 	}
 
+	// Explicit nested_type wins; otherwise fall back to the mongo_nested_type setting.
+	auto nested_type_it = input.named_parameters.find("nested_type");
+	if (nested_type_it != input.named_parameters.end() && !nested_type_it->second.IsNull()) {
+		result->nested_type = ParseMongoNestedType(nested_type_it->second.GetValue<string>());
+	} else {
+		result->nested_type = MongoDefaultNestedType(context);
+	}
+
+	auto raw_it = input.named_parameters.find("raw");
+	if (raw_it != input.named_parameters.end() && !raw_it->second.IsNull()) {
+		result->raw = raw_it->second.GetValue<bool>();
+	}
+
 	// The user-provided columns parameter takes priority over __schema and inference. Connection setup and the
 	// remaining schema resolution are shared with the catalog table entry via MongoBindSchema.
 	bool schema_set = false;
-	if (input.named_parameters.find("columns") != input.named_parameters.end()) {
+	bool has_columns = input.named_parameters.find("columns") != input.named_parameters.end();
+	if (result->raw && has_columns) {
+		throw InvalidInputException("mongo_scan: 'raw' and 'columns' cannot be combined; raw fixes the schema to "
+		                            "(_id VARCHAR, doc VARIANT)");
+	}
+	if (result->raw) {
+		SetRawSchema(result->column_names, result->column_types, result->column_name_to_mongo_path);
+		schema_set = true;
+		result->has_explicit_schema = true;
+	} else if (has_columns) {
 		ParseSchemaFromColumnsParameter(context, input.named_parameters["columns"], result->column_names,
 		                                result->column_types, result->column_name_to_mongo_path);
 		schema_set = true;
@@ -198,7 +235,7 @@ void MongoBindSchema(ClientContext &context, MongoScanData &result, bool schema_
 
 	if (!schema_set) {
 		InferSchemaFromDocuments(collection, result.sample_size, result.column_names, result.column_types,
-		                         result.column_name_to_mongo_path);
+		                         result.column_name_to_mongo_path, result.nested_type);
 	}
 
 	// Probe one document to discover which fields are actual BSON ObjectIds.
@@ -672,7 +709,9 @@ TableFunction GetMongoScanTableFunction() {
 	                                     {"sample_size", LogicalType::BIGINT},
 	                                     {"columns", LogicalType::ANY},
 	                                     {"pipeline", LogicalType::VARCHAR},
-	                                     {"schema_mode", LogicalType::VARCHAR}});
+	                                     {"schema_mode", LogicalType::VARCHAR},
+	                                     {"nested_type", LogicalType::VARCHAR},
+	                                     {"raw", LogicalType::BOOLEAN}});
 
 	mongo_scan.filter_pushdown = true;
 	mongo_scan.projection_pushdown = true;
@@ -692,7 +731,9 @@ void RegisterMongoTableFunction(DatabaseInstance &db) {
 	MongoAddNamedParameters(mongo_scan, {{"filter", LogicalType::VARCHAR},
 	                                     {"sample_size", LogicalType::BIGINT},
 	                                     {"columns", LogicalType::ANY},
-	                                     {"schema_mode", LogicalType::VARCHAR}});
+	                                     {"schema_mode", LogicalType::VARCHAR},
+	                                     {"nested_type", LogicalType::VARCHAR},
+	                                     {"raw", LogicalType::BOOLEAN}});
 
 	// Register the table function using ExtensionLoader
 	// Note: This should be called from ExtensionLoader::Load, not directly
