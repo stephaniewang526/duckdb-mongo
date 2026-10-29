@@ -120,15 +120,52 @@ std::string GetBSONTypeName(bsoncxx::type type) {
 	}
 }
 
-LogicalType InferNestedArrayType(bsoncxx::array::view array, int depth) {
+LogicalType MongoFallbackType(MongoNestedType nested_type) {
+	return nested_type == MongoNestedType::VARIANT ? LogicalType::VARIANT() : LogicalType::VARCHAR;
+}
+
+LogicalType InferPrimitiveArrayType(bsoncxx::array::view array, MongoNestedType nested_type) {
+	const int MAX_ARRAY_ELEMENTS_TO_SCAN = 10;
+	auto first_element = *array.begin();
+	LogicalType element_type = InferTypeFromBSONElement(first_element);
+	if (nested_type != MongoNestedType::VARIANT) {
+		return LogicalType::LIST(element_type);
+	}
+	// Nulls are skipped: they do not disagree with anything. DATE/TIMESTAMP and BIGINT/DOUBLE widen.
+	std::vector<LogicalType> element_types;
+	int element_count = 0;
+	for (auto it = array.begin(); it != array.end() && element_count < MAX_ARRAY_ELEMENTS_TO_SCAN;
+	     ++it, ++element_count) {
+		auto type = it->type();
+		if (type == bsoncxx::type::k_null || type == bsoncxx::type::k_undefined) {
+			continue;
+		}
+		if (type == bsoncxx::type::k_document || type == bsoncxx::type::k_array) {
+			return LogicalType::VARIANT();
+		}
+		element_types.push_back(InferTypeFromBSONElement(*it));
+	}
+	if (element_types.empty()) {
+		// Only nulls: element type unknown, compatible with any LIST
+		return LogicalType::LIST(LogicalType::SQLNULL);
+	}
+	LogicalType resolved = ResolveTypeConflict(element_types, nested_type);
+	if (resolved.id() == LogicalTypeId::VARIANT) {
+		return resolved;
+	}
+	return LogicalType::LIST(resolved);
+}
+
+LogicalType InferNestedArrayType(bsoncxx::array::view array, int depth, MongoNestedType nested_type) {
 	const int MAX_DEPTH = 5;
+	const LogicalType fallback = MongoFallbackType(nested_type);
 
 	if (depth > MAX_DEPTH) {
-		return LogicalType::VARCHAR;
+		return fallback;
 	}
 
 	if (array.begin() == array.end()) {
-		return LogicalType::VARCHAR;
+		return fallback;
 	}
 
 	auto first_element = *array.begin();
@@ -136,41 +173,40 @@ LogicalType InferNestedArrayType(bsoncxx::array::view array, int depth) {
 	if (first_element.type() == bsoncxx::type::k_array) {
 		auto nested_array = first_element.get_array().value;
 		if (nested_array.begin() == nested_array.end()) {
-			return LogicalType::VARCHAR;
+			return fallback;
 		}
 
 		auto first_inner_element = *nested_array.begin();
 
 		if (first_inner_element.type() == bsoncxx::type::k_document) {
-			LogicalType struct_type = InferStructTypeFromArray(nested_array, depth + 1);
+			LogicalType struct_type = InferStructTypeFromArray(nested_array, depth + 1, nested_type);
 			if (struct_type.id() == LogicalTypeId::STRUCT) {
 				return LogicalType::LIST(struct_type);
 			}
-			return LogicalType::VARCHAR;
+			return fallback;
 		} else if (first_inner_element.type() == bsoncxx::type::k_array) {
-			LogicalType deeper_type = InferNestedArrayType(nested_array, depth + 1);
+			LogicalType deeper_type = InferNestedArrayType(nested_array, depth + 1, nested_type);
 			if (deeper_type.id() == LogicalTypeId::LIST || deeper_type.id() == LogicalTypeId::VARCHAR) {
 				return LogicalType::LIST(deeper_type);
 			}
-			return LogicalType::VARCHAR;
+			return fallback;
 		} else {
-			LogicalType element_type = InferTypeFromBSONElement(first_inner_element);
-			return LogicalType::LIST(element_type);
+			return InferPrimitiveArrayType(nested_array, nested_type);
 		}
 	} else {
-		LogicalType element_type = InferTypeFromBSONElement(first_element);
-		return LogicalType::LIST(element_type);
+		return InferPrimitiveArrayType(array, nested_type);
 	}
 }
 
 // Helper function to infer STRUCT type from array of objects
 // Scans multiple array elements to discover all fields
-LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
+LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth, MongoNestedType nested_type) {
 	const int MAX_DEPTH = 5;
 	const int MAX_ARRAY_ELEMENTS_TO_SCAN = 10;
+	const LogicalType fallback = MongoFallbackType(nested_type);
 
 	if (depth > MAX_DEPTH) {
-		return LogicalType::VARCHAR; // Fallback to JSON for deeply nested
+		return fallback;
 	}
 
 	std::map<std::string, std::vector<LogicalType>> struct_fields;
@@ -180,8 +216,8 @@ LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
 	     ++it, ++element_count) {
 		bsoncxx::array::element array_element = *it;
 		if (array_element.type() != bsoncxx::type::k_document) {
-			// Not an array of objects - return VARCHAR
-			return LogicalType::VARCHAR;
+			// Not an array of objects
+			return fallback;
 		}
 
 		auto nested_doc = array_element.get_document().value;
@@ -190,19 +226,19 @@ LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
 
 			LogicalType field_type;
 			switch (field.type()) {
-			case bsoncxx::type::k_document: {
-				// Nested document - recursively infer STRUCT
-				// For nested documents in arrays, we'll create nested STRUCT
-				// For now, store as VARCHAR to avoid complexity
-				field_type = LogicalType::VARCHAR;
+			case bsoncxx::type::k_document:
+			case bsoncxx::type::k_array:
+				// Nested structure inside an array element: JSON string or VARIANT, never a nested STRUCT/LIST
+				field_type = fallback;
 				break;
-			}
-			case bsoncxx::type::k_array: {
-				// Nested array - store as VARCHAR for now
-				// TODO: Support nested arrays (LIST(LIST(...)) or LIST(STRUCT(...)))
-				field_type = LogicalType::VARCHAR;
+			case bsoncxx::type::k_null:
+			case bsoncxx::type::k_undefined:
+				if (nested_type == MongoNestedType::VARIANT) {
+					field_type = LogicalType::SQLNULL;
+					break;
+				}
+				field_type = InferTypeFromBSONElement(field);
 				break;
-			}
 			default: {
 				field_type = InferTypeFromBSONElement(field);
 				break;
@@ -214,29 +250,31 @@ LogicalType InferStructTypeFromArray(bsoncxx::array::view array, int depth) {
 	}
 
 	if (struct_fields.empty()) {
-		return LogicalType::VARCHAR;
+		return fallback;
 	}
 
 	// Build STRUCT type from collected fields
 	child_list_t<LogicalType> struct_children;
 	for (const auto &pair : struct_fields) {
-		LogicalType resolved_type = ResolveTypeConflict(pair.second);
+		LogicalType resolved_type = ResolveTypeConflict(pair.second, nested_type);
 		MongoChildListAppend(struct_children, pair.first, resolved_type);
 	}
 
 	// A subdocument whose keys are all "" would become a TUPLE in DuckDB 2.0, which the scan does not read
 	if (StructType::AllUnnamed(struct_children)) {
-		return LogicalType::VARCHAR;
+		return fallback;
 	}
 	return LogicalType::STRUCT(struct_children);
 }
 
 Value BSONElementToValue(const bsoncxx::document::element &element, const LogicalType &target_type) {
-	if (!element || element.type() == bsoncxx::type::k_null) {
+	if (!element || element.type() == bsoncxx::type::k_null || element.type() == bsoncxx::type::k_undefined) {
 		return Value(target_type);
 	}
 
 	switch (target_type.id()) {
+	case LogicalTypeId::VARIANT:
+		return BsonValueToVariant(element.get_value());
 	case LogicalTypeId::VARCHAR: {
 		std::string str_val;
 		if (element.type() == bsoncxx::type::k_string) {
@@ -517,8 +555,10 @@ Value BSONArrayToList(const bsoncxx::array::view &array, const LogicalType &list
 	vector<Value> list_values;
 
 	for (const auto &array_element : array) {
-		if (array_element.type() == bsoncxx::type::k_null) {
+		if (array_element.type() == bsoncxx::type::k_null || array_element.type() == bsoncxx::type::k_undefined) {
 			list_values.push_back(Value(child_type));
+		} else if (child_type_id == LogicalTypeId::VARIANT) {
+			list_values.push_back(BsonValueToVariant(array_element.get_value()));
 		} else if (array_element.type() == bsoncxx::type::k_array) {
 			auto nested_array = array_element.get_array().value;
 			Value nested_list_value = BSONArrayToList(nested_array, child_type);

@@ -239,7 +239,24 @@ struct BsonCellSource {
 	}
 };
 
+// BuildVariant source for a single in-memory BSON value.
+struct BsonValueSource {
+	const bsoncxx::types::bson_value::view &value;
+
+	bool Emit(idx_t, VariantBuilder &builder) const {
+		EmitBsonValue(value, builder);
+		return false;
+	}
+};
+
 } // namespace
+
+Value BsonValueToVariant(const bsoncxx::types::bson_value::view &value) {
+	Vector result(LogicalType::VARIANT(), 1);
+	BsonValueSource source {value};
+	BuildVariant(source, 1, result);
+	return result.GetValue(0);
+}
 
 void MongoVariantColumnBuffer::Set(idx_t row, const bsoncxx::types::bson_value::view &value) {
 	if (cells.size() <= row) {

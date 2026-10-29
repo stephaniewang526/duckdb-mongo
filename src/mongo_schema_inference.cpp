@@ -53,7 +53,100 @@ std::string SchemaModeToString(SchemaMode mode) {
 	}
 }
 
-LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
+MongoNestedType ParseMongoNestedType(const std::string &value) {
+	std::string lower = StringUtil::Lower(value);
+	if (lower == "json") {
+		return MongoNestedType::JSON;
+	} else if (lower == "variant") {
+		return MongoNestedType::VARIANT;
+	}
+	throw InvalidInputException("Invalid nested_type '%s'. Valid options: 'json', 'variant'", value);
+}
+
+void SetRawSchema(std::vector<std::string> &column_names, std::vector<LogicalType> &column_types,
+                  std::unordered_map<std::string, std::string> &column_name_to_mongo_path) {
+	column_names = {"_id", "doc"};
+	column_types = {LogicalType::VARCHAR, LogicalType::VARIANT()};
+	column_name_to_mongo_path = {{"_id", "_id"}, {"doc", MONGO_ROOT_PATH}};
+}
+
+namespace {
+
+// Variant-mode conflict resolution: only lossless merges stay typed, anything else becomes VARIANT.
+// SQLNULL marks a null value (no type information); LIST(SQLNULL) marks an empty array (any element type).
+LogicalType ResolveTypeConflictVariant(const std::vector<LogicalType> &types) {
+	std::vector<LogicalType> typed;
+	for (const auto &type : types) {
+		if (type.id() != LogicalTypeId::SQLNULL) {
+			typed.push_back(type);
+		}
+	}
+	if (typed.empty()) {
+		return LogicalType::VARIANT();
+	}
+	bool all_same = true;
+	bool all_list = true;
+	bool all_struct = true;
+	for (const auto &type : typed) {
+		all_same = all_same && type == typed[0];
+		all_list = all_list && type.id() == LogicalTypeId::LIST;
+		all_struct = all_struct && type.id() == LogicalTypeId::STRUCT;
+	}
+	if (all_same && typed[0] != LogicalType::LIST(LogicalType::SQLNULL)) {
+		return typed[0];
+	}
+	if (all_struct) {
+		// Union of the fields; a field seen with different types is resolved recursively
+		std::map<std::string, std::vector<LogicalType>> merged;
+		for (const auto &type : typed) {
+			for (idx_t i = 0; i < StructType::GetChildCount(type); i++) {
+				merged[StructType::GetChildName(type, i).GetIdentifierName()].push_back(
+				    StructType::GetChildType(type, i));
+			}
+		}
+		child_list_t<LogicalType> children;
+		for (auto &pair : merged) {
+			MongoChildListAppend(children, pair.first, ResolveTypeConflictVariant(pair.second));
+		}
+		return LogicalType::STRUCT(children);
+	}
+	if (all_list) {
+		std::vector<LogicalType> children;
+		for (const auto &type : typed) {
+			children.push_back(ListType::GetChildType(type));
+		}
+		auto child = ResolveTypeConflictVariant(children);
+		if (child.id() == LogicalTypeId::VARIANT) {
+			return child;
+		}
+		return LogicalType::LIST(child);
+	}
+
+	bool only_numeric = true;
+	bool only_temporal = true;
+	for (const auto &type : typed) {
+		if (type != LogicalType::BIGINT && type != LogicalType::DOUBLE) {
+			only_numeric = false;
+		}
+		if (type != LogicalType::DATE && type != LogicalType::TIMESTAMP) {
+			only_temporal = false;
+		}
+	}
+	if (only_numeric) {
+		return LogicalType::DOUBLE;
+	}
+	if (only_temporal) {
+		return LogicalType::TIMESTAMP;
+	}
+	return LogicalType::VARIANT();
+}
+
+} // namespace
+
+LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types, MongoNestedType nested_type) {
+	if (nested_type == MongoNestedType::VARIANT) {
+		return ResolveTypeConflictVariant(types);
+	}
 	if (types.empty()) {
 		return LogicalType::VARCHAR;
 	}
@@ -221,13 +314,14 @@ LogicalType ResolveTypeConflict(const std::vector<LogicalType> &types) {
 void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &prefix, int depth,
                        std::unordered_map<std::string, std::vector<LogicalType>> &field_types,
                        std::unordered_map<std::string, std::string> &flattened_to_mongo_path,
-                       const std::string &mongo_prefix) {
+                       const std::string &mongo_prefix, MongoNestedType nested_type) {
 	const int MAX_DEPTH = 5;
+	// Representation of anything that is not flattened: JSON string or VARIANT
+	const LogicalType fallback = MongoFallbackType(nested_type);
 
 	if (depth > MAX_DEPTH) {
-		// Store as JSON for deeply nested structures
 		if (!prefix.empty()) {
-			field_types[prefix].push_back(LogicalType::VARCHAR);
+			field_types[prefix].push_back(fallback);
 		}
 		return;
 	}
@@ -243,17 +337,18 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 		case bsoncxx::type::k_document: {
 			// Recursively process nested document to create flattened child columns.
 			auto nested_doc = element.get_document().value;
-			CollectFieldPaths(nested_doc, full_path, depth + 1, field_types, flattened_to_mongo_path, mongo_path);
-			// Also expose the parent document itself as a VARCHAR column containing JSON.
-			// This allows users to query the whole sub-document directly.
-			field_types[full_path].push_back(LogicalType::VARCHAR);
+			CollectFieldPaths(nested_doc, full_path, depth + 1, field_types, flattened_to_mongo_path, mongo_path,
+			                  nested_type);
+			// Also expose the parent document itself as a whole, so users can query the sub-document directly.
+			field_types[full_path].push_back(fallback);
 			break;
 		}
 		case bsoncxx::type::k_array: {
 			auto array = element.get_array().value;
 			if (array.begin() == array.end()) {
-				// Empty array - store as VARCHAR
-				field_types[full_path].push_back(LogicalType::VARCHAR);
+				// Empty array: element type unknown. Variant mode marks it compatible with any LIST.
+				field_types[full_path].push_back(
+				    nested_type == MongoNestedType::VARIANT ? LogicalType::LIST(LogicalType::SQLNULL) : fallback);
 				break;
 			}
 
@@ -262,32 +357,30 @@ void CollectFieldPaths(const bsoncxx::document::view &doc, const std::string &pr
 
 			if (first_element.type() == bsoncxx::type::k_document) {
 				// Array of objects - infer STRUCT type and create LIST(STRUCT(...))
-				LogicalType struct_type = InferStructTypeFromArray(array, depth);
+				LogicalType struct_type = InferStructTypeFromArray(array, depth, nested_type);
 				if (struct_type.id() == LogicalTypeId::STRUCT) {
-					// Create LIST(STRUCT(...)) type
-					LogicalType list_type = LogicalType::LIST(struct_type);
-					field_types[full_path].push_back(list_type);
+					field_types[full_path].push_back(LogicalType::LIST(struct_type));
 				} else {
-					// Fallback to VARCHAR if struct inference failed
-					field_types[full_path].push_back(LogicalType::VARCHAR);
+					field_types[full_path].push_back(fallback);
 				}
 			} else if (first_element.type() == bsoncxx::type::k_array) {
 				// Array of arrays - recursively infer nested array type
-				LogicalType nested_list_type = InferNestedArrayType(array, depth);
+				LogicalType nested_list_type = InferNestedArrayType(array, depth, nested_type);
 				if (nested_list_type.id() == LogicalTypeId::LIST) {
-					// Create LIST(LIST(...)) type
-					LogicalType list_type = LogicalType::LIST(nested_list_type);
-					field_types[full_path].push_back(list_type);
+					field_types[full_path].push_back(LogicalType::LIST(nested_list_type));
 				} else {
-					// Fallback to VARCHAR if inference failed
-					field_types[full_path].push_back(LogicalType::VARCHAR);
+					field_types[full_path].push_back(fallback);
 				}
 			} else {
-				// Array of primitives - infer element type and create LIST
-				LogicalType element_type = InferTypeFromBSONElement(first_element);
-				LogicalType list_type = LogicalType::LIST(element_type);
-				field_types[full_path].push_back(list_type);
+				field_types[full_path].push_back(InferPrimitiveArrayType(array, nested_type));
 			}
+			break;
+		}
+		case bsoncxx::type::k_null:
+		case bsoncxx::type::k_undefined: {
+			// In variant mode a null says nothing about the type; json mode keeps the VARCHAR placeholder
+			field_types[full_path].push_back(nested_type == MongoNestedType::VARIANT ? LogicalType::SQLNULL
+			                                                                         : InferTypeFromBSON(element));
 			break;
 		}
 		default: {
@@ -480,7 +573,8 @@ void ParseSchemaFromColumnsParameter(ClientContext &context, const Value &column
 
 void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_size, std::vector<string> &column_names,
                               std::vector<LogicalType> &column_types,
-                              std::unordered_map<string, string> &column_name_to_mongo_path) {
+                              std::unordered_map<string, string> &column_name_to_mongo_path,
+                              MongoNestedType nested_type) {
 	std::unordered_map<std::string, std::vector<LogicalType>> field_types;
 
 	// Use $sample aggregation for random sampling to better capture heterogeneous schemas.
@@ -493,7 +587,7 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 		pipe.sample(static_cast<int32_t>(std::min(sample_size, static_cast<int64_t>(INT32_MAX))));
 		auto cursor = collection.aggregate(pipe);
 		for (const auto &doc : cursor) {
-			CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "");
+			CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "", nested_type);
 			count++;
 			if (count >= sample_size) {
 				break;
@@ -508,7 +602,7 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 		opts.limit(sample_size);
 		auto cursor = collection.find({}, opts);
 		for (const auto &doc : cursor) {
-			CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "");
+			CollectFieldPaths(doc, "", 0, field_types, column_name_to_mongo_path, "", nested_type);
 			count++;
 			if (count >= sample_size) {
 				break;
@@ -534,7 +628,7 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 	// Ensure _id is always first
 	if (field_types.find("_id") != field_types.end()) {
 		column_names.push_back("_id");
-		LogicalType resolved_type = ResolveTypeConflict(field_types["_id"]);
+		LogicalType resolved_type = ResolveTypeConflict(field_types["_id"], nested_type);
 		column_types.push_back(resolved_type);
 		lower_name_to_idx["_id"] = 0;
 	}
@@ -553,12 +647,12 @@ void InferSchemaFromDocuments(mongocxx::collection &collection, int64_t sample_s
 			for (const auto &t : pair.second) {
 				merged.push_back(t);
 			}
-			column_types[existing_idx] = ResolveTypeConflict(merged);
+			column_types[existing_idx] = ResolveTypeConflict(merged, nested_type);
 			continue;
 		}
 		lower_name_to_idx[lower_name] = column_names.size();
 		column_names.push_back(pair.first);
-		LogicalType resolved_type = ResolveTypeConflict(pair.second);
+		LogicalType resolved_type = ResolveTypeConflict(pair.second, nested_type);
 		column_types.push_back(resolved_type);
 	}
 
