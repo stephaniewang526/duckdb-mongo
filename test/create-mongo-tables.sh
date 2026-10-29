@@ -537,6 +537,21 @@ db.sample_size_test.insertMany([
   { _id: NumberInt(2), only_in_second: 'b' }
 ]);
 
+// Collection for VARIANT path pushdown tests (test/sql/query/variant_pushdown.test). Every field mixes BSON
+// types across documents so the pushed MongoDB pre-filter must cover DuckDB's liberal VARIANT casts, and the
+// nested field has array and scalar values where a path expects a document.
+db.variant_pushdown_test.insertMany([
+  { _id: NumberInt(1), label: 'int', n: NumberInt(5), s: 'alpha', when: new Date('2024-03-04T10:00:00Z'), flag: true, nested: { a: { b: NumberInt(1) } } },
+  { _id: NumberInt(2), label: 'long', n: NumberLong(5), s: 'beta', when: new Date('2024-03-04T23:59:59.999Z'), flag: false, nested: { a: { b: 'x' } } },
+  { _id: NumberInt(3), label: 'double', n: 5.4, s: 'gamma', when: new Date('2024-03-05T00:00:00Z'), flag: NumberInt(1), nested: { a: [ { b: NumberInt(1) } ] } },
+  { _id: NumberInt(4), label: 'string', n: '5', s: NumberInt(7), when: '2024-03-04', flag: 'true', nested: { a: NumberInt(5) } },
+  { _id: NumberInt(5), label: 'null', n: null, s: null, when: null, flag: null, nested: null },
+  { _id: NumberInt(6), label: 'missing' },
+  { _id: NumberInt(7), label: 'array', n: [NumberInt(5), NumberInt(6)], s: ['alpha'], nested: { a: { b: null } } },
+  { _id: NumberInt(8), label: 'double_hi', n: 5.6, s: 'ALPHA', oid: ObjectId('507f1f77bcf86cd799439011') },
+  { _id: NumberInt(9), label: 'dotted', 'x.y': NumberInt(1) }
+]);
+
 // Write-path targets. Seeded with schema-only rows so INSERT binds against an
 // inferable schema. CTAS tests write brand-new collections, which dropDatabase()
 // above guarantees are absent on a fresh seed.
@@ -553,7 +568,7 @@ print('Collections: ' + db.getCollectionNames().join(', '));
 
 echo ""
 echo "Test MongoDB database '$MONGO_DB' created successfully!"
-echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, string_id_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types, schema_test_variant, case_variant_fields_test, sample_size_test"
+echo "Collections: users, products, orders, decimal_test, empty_collection, type_conflicts, deeply_nested, nested_scalars_test, object_container_test, string_id_test, schema_test_simple, schema_test_nested, schema_test_paths, schema_test_with_id, schema_test_types, schema_test_variant, case_variant_fields_test, sample_size_test, variant_pushdown_test"
 echo ""
 
 # Export environment variables for tests

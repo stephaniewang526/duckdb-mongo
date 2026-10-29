@@ -79,6 +79,17 @@ struct MongoScanData : public TableFunctionData {
 	}
 };
 
+// An output column DuckDB narrowed to a path inside a VARIANT column (SELECT doc.a.b), read straight from the
+// document instead of materializing the whole VARIANT.
+struct MongoExtractColumn {
+	// Position in the output chunk
+	idx_t output_idx;
+	// BSON path: the column's MongoDB path segments followed by the extracted keys
+	vector<string> path;
+	// VARIANT, or the cast DuckDB pushed into the scan
+	LogicalType type;
+};
+
 struct MongoScanState : public LocalTableFunctionState {
 	shared_ptr<MongoConnection> connection;
 	std::string database_name;
@@ -94,6 +105,8 @@ struct MongoScanState : public LocalTableFunctionState {
 	vector<idx_t> requested_column_indices;
 	vector<string> requested_column_names;
 	vector<LogicalType> requested_column_types;
+	// Output columns that are VARIANT paths (also listed in requested_column_* at their output position)
+	vector<MongoExtractColumn> extract_columns;
 	// Keep projection document alive for the lifetime of the cursor
 	bsoncxx::document::value projection_document;
 	// Keep pipeline document alive for the lifetime of the cursor (aggregate path)
@@ -151,11 +164,13 @@ std::string SchemaModeToString(SchemaMode mode);
 // Returns true if row is valid, false if row should be skipped (DROPMALFORMED)
 // Throws exception in FAILFAST mode on schema violation
 // variant_buffers (one per column) receives the cells of VARIANT columns; without it those cells are NULL
+// skip_columns (one flag per column) marks output columns the caller fills itself
 bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const std::unordered_map<std::string, std::string> &column_name_to_mongo_path,
                      SchemaMode schema_mode = SchemaMode::PERMISSIVE, bool has_explicit_schema = false,
-                     vector<MongoVariantColumnBuffer> *variant_buffers = nullptr);
+                     vector<MongoVariantColumnBuffer> *variant_buffers = nullptr,
+                     const vector<bool> *skip_columns = nullptr);
 
 bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vector<std::string> &column_names,
                             const std::vector<LogicalType> &column_types,
@@ -169,6 +184,9 @@ void DetectObjectIdColumns(mongocxx::collection &collection, std::unordered_set<
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
                                               const vector<string> &all_column_names,
                                               const unordered_map<string, string> &column_name_to_mongo_path);
+
+// find() projection for dotted MongoDB paths; a MONGO_ROOT_PATH entry (whole document) yields no projection.
+bsoncxx::document::value BuildMongoProjectionFromPaths(vector<string> mongo_paths);
 
 // Populate a MongoScanData's schema (column names/types, path map, ObjectId columns) and connection from its
 // connection_string/database_name/collection_name. When schema_already_set is true, the columns are taken as given

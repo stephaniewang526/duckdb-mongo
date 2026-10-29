@@ -119,10 +119,14 @@ static bool DocIsEmpty(const bsoncxx::document::view &v) {
 }
 
 // At this point get.table_filters still holds filters DuckDB will take back and evaluate itself at physical
-// planning (MongoSupportsPushdownType); those can't be folded into a pipeline.
+// planning (MongoSupportsPushdownType); those can't be folded into a pipeline. Columns narrowed to a VARIANT path
+// (SELECT doc.a.b) are not schema columns either, so the rewrites below stay away from such scans.
 static bool HasFilterDuckDBEvaluates(LogicalGet &get, const MongoScanData &data) {
 	auto &col_ids = get.GetColumnIds();
 	bool found = false;
+	for (auto &col_id : col_ids) {
+		found |= col_id.IsPushdownExtract();
+	}
 	MongoForEachFilter(get.table_filters, [&](idx_t proj_idx, TableFilter &) {
 		if (proj_idx < col_ids.size()) {
 			idx_t schema_idx = col_ids[proj_idx].GetPrimaryIndex();

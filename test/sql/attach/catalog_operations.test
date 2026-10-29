@@ -55,6 +55,7 @@ schema_test_with_id
 string_id_test
 type_conflicts
 users
+variant_pushdown_test
 
 # SHOW ALL TABLES shows tables from all databases
 statement ok
@@ -90,6 +91,7 @@ mongo_db	duckdb_mongo_test	schema_test_with_id
 mongo_db	duckdb_mongo_test	string_id_test
 mongo_db	duckdb_mongo_test	type_conflicts
 mongo_db	duckdb_mongo_test	users
+mongo_db	duckdb_mongo_test	variant_pushdown_test
 
 statement ok
 DROP TABLE test_memory_table;
@@ -144,7 +146,7 @@ SELECT COUNT(*) FROM duckdb_views()
 WHERE database_name = 'mongo_db' AND schema_name = 'duckdb_mongo_test'
   AND NOT regexp_matches(view_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-21
+22
 
 query I
 SELECT column_name FROM duckdb_columns() 

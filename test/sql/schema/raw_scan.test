@@ -74,13 +74,13 @@ WHERE doc.age::INT > 26;
 ----
 3
 
-# The _id filter went to MongoDB as an ObjectId; no projection is sent because doc needs the whole document
+# The _id filter went to MongoDB as an ObjectId; only the extracted path of doc is projected
 query II
 SELECT DISTINCT json_extract_string(message, '$.find.filter'), json_extract_string(message, '$.find.projection')
 FROM duckdb_logs
 WHERE type = 'MongoQuery' AND json_extract_string(message, '$.find.filter') LIKE '%507f1f77bcf86cd799439011%';
 ----
-{"_id":{"$eq":{"$oid":"507f1f77bcf86cd799439011"}}}	{}
+{"_id":{"$eq":{"$oid":"507f1f77bcf86cd799439011"}}}	{"name":1,"_id":1}
 
 statement ok
 CALL disable_logging();

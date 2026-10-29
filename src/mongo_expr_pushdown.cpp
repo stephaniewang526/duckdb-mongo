@@ -3,6 +3,7 @@
 #include "mongo_duckdb_utils.hpp"
 #include "mongo_filter_pushdown.hpp"
 #include "mongo_table_function.hpp"
+#include "mongo_variant_pushdown.hpp"
 
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
@@ -18,6 +19,7 @@
 #include <bsoncxx/builder/basic/array.hpp>
 #include <bsoncxx/builder/basic/document.hpp>
 #include <bsoncxx/types.hpp>
+#include <cstring>
 
 namespace duckdb {
 namespace {
@@ -479,6 +481,31 @@ static bool TryPushdownStructFieldPredicate(const Expression &expr, const Logica
 	return true;
 }
 
+static bool SameBson(const bsoncxx::document::view &a, const bsoncxx::document::view &b) {
+	return a.length() == b.length() && memcmp(a.data(), b.data(), a.length()) == 0;
+}
+
+// Whether `term` is already enforced by the stored match filter: equal to it or to a conjunct of its (nested) $and.
+// Filter pushdown runs again after projection pushdown rewrites the filters, so the same predicate can reappear.
+static bool HasMatchTerm(const bsoncxx::document::view &match_filter, const bsoncxx::document::view &term) {
+	if (match_filter.empty()) {
+		return false;
+	}
+	if (SameBson(match_filter, term)) {
+		return true;
+	}
+	auto and_elem = match_filter["$and"];
+	if (!and_elem || and_elem.type() != bsoncxx::type::k_array) {
+		return false;
+	}
+	for (auto &&conjunct : and_elem.get_array().value) {
+		if (conjunct.type() == bsoncxx::type::k_document && HasMatchTerm(conjunct.get_document().value, term)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace
 
 // Main complex filter pushdown function
@@ -520,6 +547,16 @@ void MongoPushdownComplexFilter(ClientContext &context, LogicalGet &get, Functio
 
 		if (TryPushdownStructFieldPredicate(*filter_expr, get, mongo_data, effective_column_names, match_terms)) {
 			it = filters.erase(it);
+			continue;
+		}
+
+		// VARIANT path predicates become a superset pre-filter; the filter stays for DuckDB to evaluate exactly
+		bsoncxx::document::value variant_doc = bsoncxx::builder::basic::document {}.extract();
+		if (TryTranslateVariantPredicate(*filter_expr, get, mongo_data, variant_doc)) {
+			if (!HasMatchTerm(mongo_data.match_filter.view(), variant_doc.view())) {
+				match_terms.push_back(std::move(variant_doc));
+			}
+			++it;
 			continue;
 		}
 
