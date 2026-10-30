@@ -108,7 +108,7 @@ ATTACH 'mongodb://user:pass@localhost:27017/mydb' AS mongo_db (TYPE MONGO);
 | `tls` / `ssl` | Enable TLS/SSL encryption | `false` | Both 1 and 2 |
 | `tls_ca_file` | Path to CA certificate file | - | Both 1 and 2 |
 | `tls_allow_invalid_certificates` | Allow invalid certificates (for testing only) | `false` | Both 1 and 2 |
-| `options` | Additional MongoDB connection string query parameters | - | Format 1 only |
+| `options` | Additional MongoDB connection string query parameters (e.g. `readPreference=secondary&maxPoolSize=10`) | - | Format 1 and secrets |
 
 ### Restricting `mongo_scan`
 
@@ -173,6 +173,19 @@ CREATE SECRET mongo_creds (
 
 -- Attach using the secret (options in ATTACH path merge with secret)
 ATTACH 'dbname=mydb?readPreference=secondaryPreferred' AS atlas_db (TYPE mongo, SECRET 'mongo_creds');
+```
+
+**URI options in the secret:** Use the `OPTIONS` key to store arbitrary MongoDB URI options alongside the credentials. This is the only way to set options such as `readPreference` when passing a secret name to `mongo_scan`:
+```sql
+CREATE SECRET mongo_secondary (
+    TYPE mongo,
+    HOST 'cluster0.xxxxx.mongodb.net',
+    USER 'myuser',
+    PASSWORD 'mypassword',
+    SRV 'true',
+    OPTIONS 'readPreference=secondary&maxPoolSize=10'
+);
+SELECT * FROM mongo_scan('mongo_secondary', 'mydb', 'mycollection');
 ```
 
 **Default secret:** Create an unnamed secret to use as the default for all ATTACH operations:
@@ -369,7 +382,7 @@ SELECT * FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'mycollection',
 ```
 
 **Parameters:**
-- `connection_string`: MongoDB connection string (`mongodb://` or `mongodb+srv://`) **or** a secret name created with `CREATE SECRET (TYPE MONGO, ...)`
+- `connection_string`: MongoDB connection string (`mongodb://` or `mongodb+srv://`) **or** a secret name created with `CREATE SECRET (TYPE MONGO, ...)`. To set URI options such as `readPreference` when using a secret, add them to the secret's `OPTIONS` key (see [Using DuckDB Secrets](#using-duckdb-secrets))
 - `database`: MongoDB database name
 - `collection`: MongoDB collection name
 - `filter` (optional): MongoDB query filter as JSON string (e.g., `'{"status": "active"}'`)
