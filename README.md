@@ -700,13 +700,21 @@ FROM mongo_scan('mongodb://localhost:27017', 'mydb', 'users', raw := true)
 WHERE _id = '507f1f77bcf86cd799439011';
 ```
 
-No documents are sampled, so the first query on a large or very irregular collection starts immediately and no field can be missed. `_id` stays a regular column (ObjectIds as hex strings) so filters on it are pushed down; `doc` is the whole document, so no projection is sent and predicates on `doc` run in DuckDB. `filter` and `pipeline` still apply server-side. `raw` cannot be combined with `columns`.
+No documents are sampled, so the first query on a large or very irregular collection starts immediately and no field can be missed. `_id` stays a regular column (ObjectIds as hex strings) so filters on it are pushed down; paths read from `doc` are projected and pre-filtered server-side as described below. `filter` and `pipeline` still apply server-side. `raw` cannot be combined with `columns`.
 
 Values map to the VARIANT types you would expect: `int32`/`int64` to `INT32`/`INT64`, `double` to `DOUBLE`, `Date` to `TIMESTAMP_MILIS`, `Binary` to `BLOB`, `Decimal128` to `DECIMAL` (or `DOUBLE` for NaN, infinity, or exponent forms), `ObjectId` to a `VARCHAR` hex string, and `null`/`undefined` to NULL. Objects list their keys in lexicographic order, so `doc::JSON` is key-sorted. Writes go the other way: a VARIANT cell in `INSERT`, `CREATE TABLE AS`, or `COPY TO` is serialized as a real BSON subdocument, array, or scalar rather than JSON text.
 
+**Pushdown through paths:**
+
+When a query reads paths of a VARIANT column (`doc.a.b`, `variant_extract(doc, 'a')`), DuckDB pushes the extraction into the scan and only those paths are fetched: `SELECT doc.name::VARCHAR, doc.price::DOUBLE FROM ...` sends `{"name": 1, "price": 1, "_id": 1}` as the projection, and a cast on the path is applied as the document is read. Reading the whole column anywhere in the query fetches the whole column.
+
+Predicates on such paths are pushed to MongoDB as a pre-filter that matches at least every row DuckDB's predicate accepts; DuckDB still evaluates the exact predicate on what comes back. The pre-filter accounts for the liberal VARIANT casts (`'5'` and `5.4` both cast to `5`, so `TRY_CAST(doc.n AS INT) = 5` becomes `{"n": {"$gt": 4, "$lt": 6}}` plus the non-numeric values), day ranges for `DATE`, millisecond bounds for `TIMESTAMP`, and MongoDB's array traversal for `IS NULL`. Supported forms are `=`, `<>`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, `IS [NOT] NULL` on `TRY_CAST(path AS T)` / `path::T` for integer, `DOUBLE`, `VARCHAR`, `BOOLEAN`, `DATE`, and `TIMESTAMP` targets, `variant_typeof(path) = '...'`, and `AND` of those (untranslatable terms are dropped from the pre-filter). `CALL enable_logging('MongoQuery')` shows exactly what was sent.
+
 Notes:
-- A strict cast such as `doc.n::INT` throws if any row holds a different type; use `TRY_CAST` for mixed fields.
-- Filters, GROUP BY, and ORDER BY on VARIANT columns run in DuckDB. `COUNT(col)` is still pushed down (it counts non-null BSON values). Columns mapped to `$$ROOT` disable projection pushdown for that scan because the whole document is needed.
+- A strict cast such as `doc.n::INT` throws if any fetched row holds a value that does not convert, as it does for a DuckDB table; use `TRY_CAST` for mixed fields.
+- DuckDB only pushes VARIANT extraction into a scan it reads directly (`mongo_scan(...)` or an attached table), not through a view or macro over it, and it keeps throwing casts such as `path::INT` above views, so predicates in that form only reach MongoDB on direct scans; `TRY_CAST` is pushed either way.
+- A bare comparison such as `doc.n = 5` compares VARIANT values in DuckDB and is not pushed; cast the path to the intended type.
+- GROUP BY and ORDER BY on VARIANT columns run in DuckDB. `COUNT(col)` is still pushed down (it counts non-null BSON values).
 
 #### Array Handling
 

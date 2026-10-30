@@ -6,7 +6,9 @@
 #include "mongo_query_log.hpp"
 #include "mongo_secrets.hpp"
 #include "mongo_catalog.hpp"
+#include "mongo_variant_pushdown.hpp"
 #include "duckdb/logging/logger.hpp"
+#include "duckdb/common/vector_operations/vector_operations.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/time.hpp"
@@ -246,43 +248,29 @@ void MongoBindSchema(ClientContext &context, MongoScanData &result, bool schema_
 bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids,
                                               const vector<string> &all_column_names,
                                               const unordered_map<string, string> &column_name_to_mongo_path) {
-	// Collect all MongoDB paths for requested columns
 	vector<string> mongo_paths;
-	bool has_id = false;
-
 	for (column_t col_id : column_ids) {
 		// Skip virtual columns (like ROWID) - virtual columns start at VIRTUAL_COLUMN_START
-		if (col_id >= VIRTUAL_COLUMN_START) {
+		if (col_id >= VIRTUAL_COLUMN_START || col_id >= all_column_names.size()) {
 			continue;
 		}
-
-		idx_t col_idx = col_id;
-		if (col_idx >= all_column_names.size()) {
-			continue;
-		}
-
-		const string &column_name = all_column_names[col_idx];
-
-		// Get MongoDB path for this column
-		string mongo_path;
+		const string &column_name = all_column_names[col_id];
 		auto path_it = column_name_to_mongo_path.find(column_name);
-		if (path_it != column_name_to_mongo_path.end()) {
-			mongo_path = path_it->second;
-		} else {
-			mongo_path = column_name;
-		}
+		mongo_paths.push_back(path_it != column_name_to_mongo_path.end() ? path_it->second : column_name);
+	}
+	return BuildMongoProjectionFromPaths(std::move(mongo_paths));
+}
 
-		// Track if _id is included
+bsoncxx::document::value BuildMongoProjectionFromPaths(vector<string> mongo_paths) {
+	bool has_id = false;
+	for (const string &mongo_path : mongo_paths) {
 		if (mongo_path == "_id") {
 			has_id = true;
 		}
-
 		// A whole-document column needs every field
 		if (mongo_path == MONGO_ROOT_PATH) {
 			return bsoncxx::builder::basic::document {}.extract();
 		}
-
-		mongo_paths.push_back(mongo_path);
 	}
 
 	// Sort paths to enable efficient prefix collapsing
@@ -291,6 +279,8 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 	// This makes prefix detection straightforward: if path A is a prefix of path B,
 	// then A will appear before B in sorted order
 	sort(mongo_paths.begin(), mongo_paths.end());
+	// The same path can be requested more than once (a VARIANT path and its cast); MongoDB rejects a repeated key
+	mongo_paths.erase(std::unique(mongo_paths.begin(), mongo_paths.end()), mongo_paths.end());
 
 	// Collapse paths with common prefixes
 	// If we have both a parent path and nested children, keep only the parent
@@ -354,6 +344,25 @@ bsoncxx::document::value BuildMongoProjection(const vector<column_t> &column_ids
 	return projection_builder.extract();
 }
 
+// The element at a path of field names; invalid when a segment is missing or an intermediate value is not a document.
+static bsoncxx::document::element FindBsonPath(const bsoncxx::document::view &doc, const vector<string> &path) {
+	bsoncxx::document::view current = doc;
+	bsoncxx::document::element element;
+	for (idx_t i = 0; i < path.size(); i++) {
+		element = current[path[i]];
+		if (!element) {
+			return bsoncxx::document::element {};
+		}
+		if (i + 1 < path.size()) {
+			if (element.type() != bsoncxx::type::k_document) {
+				return bsoncxx::document::element {};
+			}
+			current = element.get_document().value;
+		}
+	}
+	return element;
+}
+
 unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context, TableFunctionInitInput &input,
                                                        GlobalTableFunctionState *global_state) {
 	const auto &data = dynamic_cast<const MongoScanData &>(*input.bind_data);
@@ -369,16 +378,70 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// Projection pushdown: the output chunk follows projection_ids whenever it is set, even when it lists every
 	// column, because DuckDB 2.0 appends the column of a filter it evaluates itself (see supports_pushdown_type) at
 	// the end. Filter columns DuckDB pruned are not fetched: their filters run server-side.
-	vector<column_t> columns_to_fetch;
-	if (!input.projection_ids.empty()) {
-		// projection_ids contains indices into input.column_ids
+	vector<reference<const ColumnIndex>> columns_to_fetch;
+	if (!input.projection_ids.empty() && result->pipeline_json.empty()) {
+		// projection_ids contains indices into input.column_indexes
 		for (idx_t proj_idx : input.projection_ids) {
-			if (proj_idx < input.column_ids.size()) {
-				columns_to_fetch.push_back(input.column_ids[proj_idx]);
+			if (proj_idx < input.column_indexes.size()) {
+				columns_to_fetch.emplace_back(input.column_indexes[proj_idx]);
 			}
 		}
 	} else {
-		columns_to_fetch = input.column_ids;
+		for (auto &column_index : input.column_indexes) {
+			columns_to_fetch.emplace_back(column_index);
+		}
+	}
+
+	// Columns are materialized in output-chunk order (columns_to_fetch). A column DuckDB narrowed to a VARIANT path
+	// (ColumnIndexType::PUSHDOWN_EXTRACT) is read from the document at that path; the same VARIANT column may be
+	// listed several times with different paths.
+	vector<string> projection_paths;
+	for (const ColumnIndex &column_index : columns_to_fetch) {
+		column_t col_id = column_index.GetPrimaryIndex();
+		if (col_id >= VIRTUAL_COLUMN_START || col_id >= data.column_names.size()) {
+			continue;
+		}
+		const string &column_name = data.column_names[col_id];
+		auto path_it = data.column_name_to_mongo_path.find(column_name);
+		string mongo_path = path_it != data.column_name_to_mongo_path.end() ? path_it->second : column_name;
+		vector<string> keys;
+		if (MongoVariantExtractKeys(column_index, keys)) {
+			MongoExtractColumn extract;
+			extract.output_idx = result->requested_column_indices.size();
+			extract.type = column_index.GetScanType();
+			if (mongo_path != MONGO_ROOT_PATH) {
+				extract.path = StringUtil::Split(mongo_path, '.');
+			}
+			extract.path.insert(extract.path.end(), keys.begin(), keys.end());
+			// Project the longest prefix that is valid dot notation; the rest is extracted client-side
+			string projected;
+			for (auto &segment : extract.path) {
+				if (!MongoIsPlainFieldKey(segment)) {
+					break;
+				}
+				projected += (projected.empty() ? "" : ".") + segment;
+			}
+			projection_paths.push_back(projected.empty() ? string(MONGO_ROOT_PATH) : projected);
+			result->requested_column_indices.push_back(col_id);
+			result->requested_column_names.push_back(column_index.GetName(column_name));
+			result->requested_column_types.push_back(extract.type);
+			result->extract_columns.push_back(std::move(extract));
+			continue;
+		}
+		bool already_requested = false;
+		for (idx_t i = 0; i < result->requested_column_indices.size(); i++) {
+			if (result->requested_column_indices[i] == col_id && result->requested_column_names[i] == column_name) {
+				already_requested = true;
+				break;
+			}
+		}
+		if (already_requested) {
+			continue;
+		}
+		projection_paths.push_back(mongo_path);
+		result->requested_column_indices.push_back(col_id);
+		result->requested_column_names.push_back(column_name);
+		result->requested_column_types.push_back(data.column_types[col_id]);
 	}
 
 	// Get collection
@@ -388,19 +451,10 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	// If a pipeline is provided, execute an aggregation pipeline instead of find().
 	// Note: for pipeline results that do not match the underlying collection schema,
 	// callers must provide an explicit schema via the `columns` parameter.
+	// (We do not automatically inject a $project stage into the pipeline here, because the pipeline may already
+	// change the shape of the documents. Optimizer-generated pipelines should include $project explicitly when
+	// beneficial.)
 	if (!result->pipeline_json.empty()) {
-		// Populate requested columns so the scan only materializes columns DuckDB asked for.
-		// (We do not automatically inject a $project stage into the pipeline here, because the pipeline may already
-		// change the shape of the documents. Optimizer-generated pipelines should include $project explicitly when
-		// beneficial.)
-		for (column_t col_id : input.column_ids) {
-			if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size()) {
-				result->requested_column_indices.push_back(col_id);
-				result->requested_column_names.push_back(data.column_names[col_id]);
-				result->requested_column_types.push_back(data.column_types[col_id]);
-			}
-		}
-
 		// Parse JSON array pipeline by wrapping it in a document.
 		// Example input: '[{"$match":{"x":1}},{"$count":"count"}]'
 		auto wrapped = StringUtil::Format("{\"pipeline\": %s}", result->pipeline_json);
@@ -468,17 +522,6 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	}
 	bsoncxx::document::value query_filter = MongoAndDocuments(std::move(query_conjuncts));
 
-	// Columns are materialized in output-chunk order (columns_to_fetch).
-	for (column_t col_id : columns_to_fetch) {
-		if (col_id < VIRTUAL_COLUMN_START && col_id < data.column_names.size() &&
-		    std::find(result->requested_column_indices.begin(), result->requested_column_indices.end(), col_id) ==
-		        result->requested_column_indices.end()) {
-			result->requested_column_indices.push_back(col_id);
-			result->requested_column_names.push_back(data.column_names[col_id]);
-			result->requested_column_types.push_back(data.column_types[col_id]);
-		}
-	}
-
 	// Build MongoDB find options
 	mongocxx::options::find opts;
 
@@ -489,13 +532,17 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 		// Add all schema columns to requested_column_indices if not already present
 		for (idx_t col_idx = 0; col_idx < data.column_names.size(); col_idx++) {
 			bool already_added = false;
-			for (idx_t req_idx : result->requested_column_indices) {
-				if (req_idx == col_idx) {
+			for (idx_t i = 0; i < result->requested_column_indices.size(); i++) {
+				if (result->requested_column_indices[i] == col_idx &&
+				    result->requested_column_names[i] == data.column_names[col_idx]) {
 					already_added = true;
 					break;
 				}
 			}
 			if (!already_added) {
+				auto path_it = data.column_name_to_mongo_path.find(data.column_names[col_idx]);
+				projection_paths.push_back(
+				    path_it != data.column_name_to_mongo_path.end() ? path_it->second : data.column_names[col_idx]);
 				result->requested_column_indices.push_back(col_idx);
 				result->requested_column_names.push_back(data.column_names[col_idx]);
 				result->requested_column_types.push_back(data.column_types[col_idx]);
@@ -504,20 +551,10 @@ unique_ptr<LocalTableFunctionState> MongoScanInitLocal(ExecutionContext &context
 	}
 
 	// Build MongoDB projection from requested columns
-	if (!result->requested_column_indices.empty()) {
-		vector<column_t> projection_column_ids(result->requested_column_indices.begin(),
-		                                       result->requested_column_indices.end());
-		auto projection_doc =
-		    BuildMongoProjection(projection_column_ids, data.column_names, data.column_name_to_mongo_path);
-
-		// Check if projection document has fields (empty means return all fields)
-		auto proj_view = projection_doc.view();
-		int field_count = 0;
-		for (auto it = proj_view.begin(); it != proj_view.end(); ++it) {
-			field_count++;
-		}
-
-		if (field_count > 0) {
+	if (!projection_paths.empty()) {
+		auto projection_doc = BuildMongoProjectionFromPaths(std::move(projection_paths));
+		// An empty projection document means every field
+		if (!projection_doc.view().empty()) {
 			// Store projection document to keep it alive for cursor lifetime
 			result->projection_document = std::move(projection_doc);
 			opts.projection(result->projection_document.view());
@@ -585,6 +622,7 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 		state.requested_column_names.clear();
 		state.requested_column_types.clear();
 		state.requested_column_indices.clear();
+		state.extract_columns.clear();
 
 		while (count < max_count && *state.current != *state.end) {
 			++(*state.current);
@@ -631,8 +669,17 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 	}
 	// VARIANT cells are buffered per chunk (see MongoVariantColumnBuffer)
 	vector<MongoVariantColumnBuffer> variant_buffers;
-	if (!variant_columns.empty()) {
+	if (!variant_columns.empty() || !state.extract_columns.empty()) {
 		variant_buffers.resize(num_cols_to_use);
+	}
+	// VARIANT path columns are read here, not by FlattenDocument; their cells also go through variant_buffers
+	vector<bool> skip_columns(num_cols_to_use, false);
+	vector<reference<const MongoExtractColumn>> extract_columns;
+	for (auto &extract : state.extract_columns) {
+		if (extract.output_idx < num_cols_to_use) {
+			skip_columns[extract.output_idx] = true;
+			extract_columns.emplace_back(extract);
+		}
 	}
 
 	// If the pipeline returned no rows for a COUNT(*) pushdown, emit a single 0 row.
@@ -673,7 +720,19 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 			row_valid =
 			    FlattenDocument(doc, trunc_names, trunc_types, output, count, bind_data.column_name_to_mongo_path,
 			                    bind_data.schema_mode, bind_data.has_explicit_schema,
-			                    variant_columns.empty() ? nullptr : &variant_buffers);
+			                    variant_buffers.empty() ? nullptr : &variant_buffers,
+			                    extract_columns.empty() ? nullptr : &skip_columns);
+		}
+		if (row_valid) {
+			for (const MongoExtractColumn &extract : extract_columns) {
+				auto element = FindBsonPath(doc, extract.path);
+				if (!element || element.type() == bsoncxx::type::k_null ||
+				    element.type() == bsoncxx::type::k_undefined) {
+					variant_buffers[extract.output_idx].SetNull(count);
+				} else {
+					variant_buffers[extract.output_idx].Set(count, element.get_value());
+				}
+			}
 		}
 		++(*state.current);
 		if (row_valid) {
@@ -685,6 +744,17 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 
 	for (auto col_idx : variant_columns) {
 		variant_buffers[col_idx].Build(count, output.data[col_idx]);
+	}
+	for (const MongoExtractColumn &extract : extract_columns) {
+		if (extract.type.id() == LogicalTypeId::VARIANT) {
+			continue; // built above
+		}
+		// DuckDB pushed a cast into the scan: build the VARIANT and apply the cast with DuckDB's own semantics
+		Vector variant(LogicalType::VARIANT(), STANDARD_VECTOR_SIZE);
+		variant_buffers[extract.output_idx].Build(count, variant);
+		if (count > 0) {
+			VectorOperations::Cast(context, variant, output.data[extract.output_idx], count);
+		}
 	}
 
 	output.SetChildCardinality(count);
@@ -699,6 +769,13 @@ void MongoScanFunction(ClientContext &context, TableFunctionInput &data_p, DataC
 static bool MongoSupportsPushdownType(const FunctionData &bind_data, idx_t col_idx) {
 	auto &data = bind_data.Cast<MongoScanData>();
 	return col_idx >= data.column_types.size() || MongoCanPushdownFilterType(data.column_types[col_idx]);
+}
+
+// Lets DuckDB narrow `SELECT doc.a.b` to the extracted path (ColumnIndexType::PUSHDOWN_EXTRACT), which the scan then
+// projects and reads directly instead of materializing the whole VARIANT.
+static bool MongoSupportsPushdownExtract(const FunctionData &bind_data, const LogicalIndex &col_idx) {
+	auto &data = bind_data.Cast<MongoScanData>();
+	return col_idx.index < data.column_types.size() && data.column_types[col_idx.index].id() == LogicalTypeId::VARIANT;
 }
 
 TableFunction GetMongoScanTableFunction() {
@@ -717,6 +794,7 @@ TableFunction GetMongoScanTableFunction() {
 	mongo_scan.projection_pushdown = true;
 	mongo_scan.filter_prune = true;
 	mongo_scan.supports_pushdown_type = MongoSupportsPushdownType;
+	mongo_scan.supports_pushdown_extract = MongoSupportsPushdownExtract;
 	mongo_scan.pushdown_complex_filter = MongoPushdownComplexFilter;
 	mongo_scan.to_string = MongoScanToString;
 

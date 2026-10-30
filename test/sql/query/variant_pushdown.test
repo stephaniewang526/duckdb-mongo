@@ -1,0 +1,554 @@
+# name: test/sql/query/variant_pushdown.test
+# description: Projection and filter pushdown through variant_extract paths of VARIANT columns
+# group: [query]
+
+require mongo
+
+require json
+
+require-env MONGODB_TEST_DATABASE_AVAILABLE
+
+statement ok
+CALL enable_logging('MongoQuery');
+
+statement ok
+SET mongo_nested_type = 'variant';
+
+statement ok
+ATTACH 'host=localhost port=27017 dbname=duckdb_mongo_test' AS m (TYPE MONGO);
+
+# json() canonicalizes spacing, which differs between bsoncxx versions
+statement ok
+CREATE MACRO mongo_find() AS TABLE
+SELECT DISTINCT json_extract_string(message, '$.find.filter') AS filter,
+       json_extract_string(message, '$.find.projection') AS projection
+FROM duckdb_logs WHERE type = 'MongoQuery' AND json_exists(message, '$.find');
+
+# raw := true exposes the whole document as `doc`, so every path is relative to the document root. The scans are
+# spelled out because DuckDB only pushes VARIANT extracts into a scan it reads directly, not through a view or macro.
+
+# ============================================================================
+# Projection: only the extracted paths are fetched
+# ============================================================================
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+SELECT doc.label::VARCHAR, doc.nested.a.b FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) ORDER BY doc._id::INT;
+----
+int	1
+long	x
+double	NULL
+string	NULL
+null	NULL
+missing	NULL
+array	NULL
+double_hi	NULL
+dotted	NULL
+
+query TT
+FROM mongo_find();
+----
+{}	{"_id":1,"label":1,"nested.a.b":1}
+
+# A cast on the path is applied in the scan
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.s::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) ORDER BY doc._id::INT;
+----
+alpha
+beta
+gamma
+7
+NULL
+NULL
+[alpha]
+ALPHA
+NULL
+
+query TT
+FROM mongo_find();
+----
+{}	{"_id":1,"s":1}
+
+# A strict cast runs on every fetched row, before filters DuckDB evaluates itself (same as a DuckDB table)
+statement error
+SELECT doc.n::INT FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.label = 'int';
+----
+Conversion Error
+
+query I
+SELECT TRY_CAST(doc.n AS INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.label = 'int';
+----
+5
+
+# A path and its parent: the parent is fetched once
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+SELECT doc.nested.a, doc.nested.a.b FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.label::VARCHAR = 'int';
+----
+{'b': 1}	1
+
+query TT
+FROM mongo_find();
+----
+{"$or":[{"label":{"$eq":"int"}},{"label":{"$not":{"$type":["string","objectId"]},"$ne":null}}]}	{"label":1,"nested.a":1,"_id":1}
+
+# A key with a dot cannot be written in dot notation: the whole document is fetched and the key resolved locally
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE variant_extract(doc, 'x.y')::INT = 1;
+----
+dotted
+
+query TT
+FROM mongo_find();
+----
+{}	{}
+
+# ============================================================================
+# Filters: MongoDB receives a superset of the rows; DuckDB keeps the exact predicate.
+# Each case lists the documents DuckDB returns and the command MongoDB received.
+# ============================================================================
+
+# Integers: '5' and 5.4 both cast to 5, so the match widens to the open interval (4, 6) plus non-numeric values
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) = 5 ORDER BY doc._id::INT;
+----
+int
+long
+double
+string
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"n":{"$gt":4,"$lt":6}},{"n":{"$not":{"$type":["int","long","double","decimal"]},"$ne":null}}]}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) <> 5 ORDER BY doc._id::INT;
+----
+double_hi
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"n":{"$nin":[5,null]}}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) BETWEEN 6 AND 7 ORDER BY doc._id::INT;
+----
+double_hi
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$and":[{"$or":[{"n":{"$gt":5}},{"n":{"$not":{"$type":["int","long","double","decimal"]},"$ne":null}}]},{"$or":[{"n":{"$lt":8}},{"n":{"$not":{"$type":["int","long","double","decimal"]},"$ne":null}}]}]}
+
+# Doubles compare exactly; decimals are left to the escape term
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS DOUBLE) > 5.5 ORDER BY doc._id::INT;
+----
+double_hi
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"n":{"$gt":5.5}},{"n":{"$not":{"$type":["int","long","double"]},"$ne":null}}]}
+
+# Strings: 7 renders as '7' and ['alpha'] as '[alpha]', so non-string values go through the escape term
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR IN ('alpha', 'beta') ORDER BY doc._id::INT;
+----
+int
+long
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"s":{"$eq":"alpha"}},{"s":{"$not":{"$type":["string","objectId"]},"$ne":null}},{"s":{"$eq":"beta"}}]}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR > 'b' ORDER BY doc._id::INT;
+----
+long
+double
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"s":{"$gt":"b"}},{"s":{"$not":{"$type":["string"]},"$ne":null}}]}
+
+# An ObjectId reads as its hex text, so a 24-hex constant also matches the ObjectId itself
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.oid::VARCHAR = '507f1f77bcf86cd799439011';
+----
+double_hi
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"oid":{"$eq":"507f1f77bcf86cd799439011"}},{"oid":{"$eq":{"$oid":"507f1f77bcf86cd799439011"}}},{"oid":{"$not":{"$type":["string","objectId"]},"$ne":null}}]}
+
+# Booleans: 1 and 'true' cast to true
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.flag::BOOLEAN = true ORDER BY doc._id::INT;
+----
+int
+double
+string
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"flag":{"$eq":true}},{"flag":{"$not":{"$type":["bool"]},"$ne":null}}]}
+
+# Dates: a BSON date casts to the DATE of its day, so the day is the unit of comparison
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.when::DATE = DATE '2024-03-04' ORDER BY doc._id::INT;
+----
+int
+long
+string
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"when":{"$gte":{"$date":"2024-03-04T00:00:00Z"},"$lt":{"$date":"2024-03-05T00:00:00Z"}}},{"when":{"$not":{"$type":["date"]},"$ne":null}}]}
+
+# Timestamps: BSON dates have millisecond precision, so bounds are rounded outward to milliseconds
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.when::TIMESTAMP > TIMESTAMP '2024-03-04 23:59:59.9985' ORDER BY doc._id::INT;
+----
+long
+double
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"when":{"$gt":{"$date":"2024-03-04T23:59:59.998Z"}}},{"when":{"$not":{"$type":["date"]},"$ne":null}}]}
+
+# IS NULL: missing, null, and paths through a non-document. MongoDB walks arrays along a path where DuckDB yields
+# NULL, so documents with an array at an ancestor are also fetched.
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.nested.a.b IS NULL ORDER BY doc._id::INT;
+----
+double
+string
+null
+missing
+array
+double_hi
+dotted
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"nested.a.b":null},{"nested":{"$type":"array"}},{"nested.a":{"$type":"array"}}]}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.nested.a.b IS NOT NULL ORDER BY doc._id::INT;
+----
+int
+long
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"nested.a.b":{"$ne":null}},{"nested.a.b":{"$type":"array"}}]}
+
+# variant_typeof maps to $type
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE variant_typeof(doc.n) = 'INT32';
+----
+int
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"n":{"$type":"int"}}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE variant_typeof(doc.n) = 'ARRAY(2)';
+----
+array
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"n":{"$type":"array"}}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE variant_typeof(doc.n) = 'VARIANT_NULL' ORDER BY doc._id::INT;
+----
+null
+missing
+dotted
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"n":null}
+
+# AND drops the term it cannot translate; OR with such a term is not pushed at all
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR = 'alpha' AND doc.label::VARCHAR LIKE 'i%';
+----
+int
+
+query T
+SELECT filter FROM mongo_find();
+----
+{"$or":[{"s":{"$eq":"alpha"}},{"s":{"$not":{"$type":["string","objectId"]},"$ne":null}}]}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR = 'alpha' OR doc.label::VARCHAR LIKE 'd%' ORDER BY doc._id::INT;
+----
+int
+double
+double_hi
+dotted
+
+query T
+SELECT filter FROM mongo_find();
+----
+{}
+
+# A bare comparison binds to variant_comparator, which cannot be pushed
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT doc.label::VARCHAR FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s = 'alpha';
+----
+int
+
+query T
+SELECT filter FROM mongo_find();
+----
+{}
+
+# ============================================================================
+# Differential check: every pushed predicate returns the same rows as the predicate evaluated on a local copy
+# of the collection. A pre-filter that is too narrow would fail here even if the hand-written expectations above
+# agreed with it.
+# ============================================================================
+
+statement ok
+CREATE TABLE local_copy AS SELECT _id, doc FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true);
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) = 5) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.n AS INT) = 5);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) <> 5) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.n AS INT) <> 5);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) BETWEEN 5 AND 6) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.n AS INT) BETWEEN 5 AND 6);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) IN (5, 6)) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.n AS INT) IN (5, 6));
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS DOUBLE) >= 5.4) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.n AS DOUBLE) >= 5.4);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR = 'alpha') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE doc.s::VARCHAR = 'alpha');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR > 'b') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE doc.s::VARCHAR > 'b');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.s::VARCHAR IN ('alpha', '7', '[alpha]')) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE doc.s::VARCHAR IN ('alpha', '7', '[alpha]'));
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.oid::VARCHAR = '507f1f77bcf86cd799439011') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE doc.oid::VARCHAR = '507f1f77bcf86cd799439011');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.flag AS BOOLEAN) = true) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.flag AS BOOLEAN) = true);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.when AS DATE) = DATE '2024-03-04') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.when AS DATE) = DATE '2024-03-04');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.when AS TIMESTAMP) >= TIMESTAMP '2024-03-04 23:59:59.999') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.when AS TIMESTAMP) >= TIMESTAMP '2024-03-04 23:59:59.999');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.when AS TIMESTAMP) <> TIMESTAMP '2024-03-04 10:00:00') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.when AS TIMESTAMP) <> TIMESTAMP '2024-03-04 10:00:00');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.nested.a.b IS NULL) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE doc.nested.a.b IS NULL);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE doc.nested.a.b IS NOT NULL) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE doc.nested.a.b IS NOT NULL);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.nested.a.b AS INT) IS NULL) = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.nested.a.b AS INT) IS NULL);
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE variant_typeof(doc.n) = 'INT64') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE variant_typeof(doc.n) = 'INT64');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE variant_typeof(doc.nested.a) = 'VARIANT_NULL') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE variant_typeof(doc.nested.a) = 'VARIANT_NULL');
+----
+true
+
+query I
+SELECT (SELECT list(_id ORDER BY _id::INT) FROM mongo_scan('mongodb://localhost:27017', 'duckdb_mongo_test', 'variant_pushdown_test', raw := true) WHERE TRY_CAST(doc.n AS INT) = 5 AND doc.s::VARCHAR = 'alpha') = (SELECT list(_id ORDER BY _id::INT) FROM local_copy WHERE TRY_CAST(doc.n AS INT) = 5 AND doc.s::VARCHAR = 'alpha');
+----
+true
+
+# Every query above sent a non-empty pre-filter, so the comparison exercised the pushdown
+query II
+SELECT count(*), count(*) FILTER (WHERE filter = '{}')
+FROM (SELECT json_extract_string(message, '$.find.filter') AS filter FROM duckdb_logs WHERE type = 'MongoQuery' AND json_exists(message, '$.find'));
+----
+19	0
+
+statement ok
+DROP TABLE local_copy;
+
+# ============================================================================
+# Inferred VARIANT columns: paths are relative to the column's MongoDB path
+# ============================================================================
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+SELECT name, specs.cpu::VARCHAR FROM m.products WHERE specs.dpi::INT > 1000;
+----
+Mouse	NULL
+
+query TT
+FROM mongo_find();
+----
+{"$or":[{"specs.dpi":{"$gt":1000}},{"specs.dpi":{"$not":{"$type":["int","long","double","decimal"]},"$ne":null}}]}	{"name":1,"specs.cpu":1,"specs.dpi":1,"_id":1}
+
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+SELECT name, specs_dimensions.width::INT FROM m.products WHERE specs_dimensions.width IS NOT NULL;
+----
+Desk	120
+
+query TT
+FROM mongo_find();
+----
+{"$or":[{"specs.dimensions.width":{"$ne":null}},{"specs.dimensions.width":{"$type":"array"}}]}	{"name":1,"specs.dimensions.width":1,"_id":1}
+
+# Selecting the whole VARIANT alongside a path fetches the whole column
+statement ok
+CALL truncate_duckdb_logs();
+
+query II
+SELECT variant_typeof(specs), specs.cpu::VARCHAR FROM m.products WHERE name = 'Laptop';
+----
+OBJECT(cpu, ram, storage)	Intel i7
+
+query TT
+FROM mongo_find();
+----
+{"name":{"$eq":"Laptop"}}	{"specs":1,"_id":1}
+
+statement ok
+CALL disable_logging();
+
+statement ok
+DETACH m;

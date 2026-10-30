@@ -48,7 +48,7 @@ WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
   AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-21
+22
 
 # Query collections again - should use cached data
 query I
@@ -57,7 +57,7 @@ WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
   AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-21
+22
 
 # Get list of collections (this uses cached collection names)
 query T
@@ -88,6 +88,7 @@ schema_test_with_id
 string_id_test
 type_conflicts
 users
+variant_pushdown_test
 
 # Clear cache - this should invalidate:
 # 1. collection_cache (collection names per database)
@@ -104,7 +105,7 @@ WHERE table_catalog = 'test_mongo'
   AND table_schema = 'duckdb_mongo_test'
   AND NOT regexp_matches(table_name, '^(copy|ctas|write)_|^insert_(target|dup)$|_roundtrip$');
 ----
-21
+22
 
 # Verify we get the same collections (proving fresh data was fetched, not stale cache)
 query T
@@ -135,6 +136,7 @@ schema_test_with_id
 string_id_test
 type_conflicts
 users
+variant_pushdown_test
 
 # Test that SHOW TABLES also reflects fresh data after cache clear
 # First, query to populate cache

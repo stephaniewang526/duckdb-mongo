@@ -777,7 +777,8 @@ bool ValidateDocumentSchema(const bsoncxx::document::view &doc, const std::vecto
 bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<string> &column_names,
                      const std::vector<LogicalType> &column_types, DataChunk &output, idx_t row_idx,
                      const std::unordered_map<string, string> &column_name_to_mongo_path, SchemaMode schema_mode,
-                     bool has_explicit_schema, vector<MongoVariantColumnBuffer> *variant_buffers) {
+                     bool has_explicit_schema, vector<MongoVariantColumnBuffer> *variant_buffers,
+                     const vector<bool> *skip_columns) {
 	// Track if we've seen any schema violations in this row (for DROPMALFORMED)
 	bool row_has_violation = false;
 
@@ -979,6 +980,9 @@ bool FlattenDocument(const bsoncxx::document::view &doc, const std::vector<strin
 	};
 
 	for (idx_t col_idx = 0; col_idx < column_names.size(); col_idx++) {
+		if (skip_columns && col_idx < skip_columns->size() && (*skip_columns)[col_idx]) {
+			continue;
+		}
 		const auto &column_name = column_names[col_idx];
 		const auto &column_type = column_types[col_idx];
 
