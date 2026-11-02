@@ -43,6 +43,7 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 	string tlsAllowInvalidCertificates = kv_secret.TryGetValue("tlsAllowInvalidCertificates").IsNull()
 	                                         ? ""
 	                                         : kv_secret.TryGetValue("tlsAllowInvalidCertificates").ToString();
+	string options = kv_secret.TryGetValue("options").IsNull() ? "" : kv_secret.TryGetValue("options").ToString();
 
 	// Check if using SRV connection (for MongoDB Atlas)
 	bool use_srv = false;
@@ -101,6 +102,12 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 			query_params.push_back("tlsAllowInvalidCertificates=true");
 		}
 	}
+	// Arbitrary URI options from the secret (e.g. "readPreference=secondary&maxPoolSize=10")
+	for (const auto &pair : StringUtil::Split(options, "&")) {
+		if (!pair.empty()) {
+			query_params.push_back(pair);
+		}
+	}
 
 	// If attach_path is a MongoDB URI, merge additional options from it
 	// Otherwise, if attach_path contains key=value pairs, parse and add them
@@ -129,8 +136,12 @@ string BuildMongoConnectionString(const KeyValueSecret &kv_secret, const string 
 					string value = pair.substr(pos + 1);
 					StringUtil::Trim(key);
 					StringUtil::Trim(value);
-					// Add as query parameter
-					query_params.push_back(key + "=" + value);
+					if (key == "options") {
+						// Value is already a query string fragment (same as the ATTACH key-value format)
+						query_params.push_back(value);
+					} else {
+						query_params.push_back(key + "=" + value);
+					}
 				}
 			}
 		}
@@ -177,6 +188,8 @@ unique_ptr<BaseSecret> CreateMongoSecretFunction(ClientContext &context, CreateS
 			result->secret_map["tlsCAFile"] = named_param.second.ToString();
 		} else if (lower_name == "tls_allow_invalid_certificates") {
 			result->secret_map["tlsAllowInvalidCertificates"] = named_param.second.ToString();
+		} else if (lower_name == "options") {
+			result->secret_map["options"] = named_param.second.ToString();
 		} else {
 			throw InternalException("Unknown named parameter passed to CreateMongoSecretFunction: " + lower_name);
 		}
@@ -201,6 +214,7 @@ void SetMongoSecretParameters(CreateSecretFunction &function) {
 	function.named_parameters["ssl"] = LogicalType::VARCHAR;
 	function.named_parameters["tls_ca_file"] = LogicalType::VARCHAR;
 	function.named_parameters["tls_allow_invalid_certificates"] = LogicalType::VARCHAR;
+	function.named_parameters["options"] = LogicalType::VARCHAR;
 }
 
 } // namespace duckdb
